@@ -1,19 +1,23 @@
+Imports System
 Imports System.Globalization
+Imports System.Text.Json
+Imports System.Threading.Tasks
 
-''' <summary>Satu jadwal pemeliharaan (nanti dari tabel maintenances).</summary>
+''' <summary>Satu jadwal pemeliharaan dari view `v_maintenances` di Supabase.</summary>
 Public Class MaintRow
+    Public Property Id As String
     Public Property Aset As String
     Public Property Tanggal As Date
     Public Property Biaya As Decimal
     Public Property Status As String     ' Terjadwal / Proses / Selesai
     Public Property Catatan As String = ""
 
-    Public Sub New(aset As String, tgl As Date, biaya As Decimal, status As String)
-        Me.Aset = aset : Tanggal = tgl : Me.Biaya = biaya : Me.Status = status
+    Public Sub New(aset As String, tgl As Date, biaya As Decimal, status As String, Optional id As String = "", Optional catatan As String = "")
+        Me.Id = id : Me.Aset = aset : Tanggal = tgl : Me.Biaya = biaya : Me.Status = status : Me.Catatan = catatan
     End Sub
 End Class
 
-''' <summary>Halaman Pemeliharaan: jadwal di kiri, form "Jadwalkan perawatan" di kanan.</summary>
+''' <summary>Halaman Pemeliharaan yang terhubung ke Supabase.</summary>
 Public Class ucPemeliharaan
     Inherits UserControl
 
@@ -23,6 +27,7 @@ Public Class ucPemeliharaan
 
     Private ReadOnly _id As New CultureInfo("id-ID")
     Private ReadOnly _data As New List(Of MaintRow)
+    Private ReadOnly _assetIds As New Dictionary(Of String, String)()
     Private _page As Integer = 0
 
     Private ReadOnly _grid As DataGridView
@@ -32,13 +37,13 @@ Public Class ucPemeliharaan
     Private ReadOnly _dtTanggal As AppDateBox
     Private ReadOnly _txtBiaya As AppTextBox
     Private ReadOnly _txtCatatan As AppTextBox
+    Private ReadOnly _btnSave As AppButton
 
     Private Shared ReadOnly StatusFlow As String() = {"Terjadwal", "Proses", "Selesai"}
 
     Public Sub New()
         BackColor = Theme.OffWhite
         DoubleBuffered = True
-        LoadSampleData()
 
         Controls.Add(MakeLabel("Pemeliharaan", 26, Theme.Charcoal, 24, 22, FontStyle.Bold))
         Controls.Add(MakeLabel("Jadwalkan perawatan aset agar tetap siap digunakan.", 14, Theme.Grey, 24, 62))
@@ -68,7 +73,7 @@ Public Class ucPemeliharaan
         wrap.Controls.Add(_grid)
         card.Controls.Add(wrap)
 
-        _lblFooter = MakeLabel("", 12, Theme.Grey, 16, 530)
+        _lblFooter = MakeLabel("Memuat data dari Supabase...", 12, Theme.Grey, 16, 530)
         card.Controls.Add(_lblFooter)
         Dim btnPrev As New AppButton() With {.Text = "Sebelumnya", .Kind = ButtonKind.Outline, .Location = New Point(412, 520), .Size = New Size(108, 36), .BackColor = Theme.OffWhite}
         AddHandler btnPrev.Click, Sub(s, e) GoPage(_page - 1)
@@ -85,9 +90,7 @@ Public Class ucPemeliharaan
         Dim form As New RoundedPanel() With {.Location = New Point(736, 100), .Size = New Size(366, 568), .Radius = 8}
         form.Controls.Add(MakeLabel("Jadwalkan perawatan", 18, Theme.Charcoal, 20, 20, FontStyle.Bold))
 
-        _cbAset = New AppComboBox() With {.PlaceholderText = "Pilih aset"}
-        ' TODO (Supabase): isi dari tabel assets.
-        _cbAset.SetItems("Proyektor Epson", "AC Daikin 1 PK", "Laptop Lenovo ThinkPad", "Printer Epson", "UPS APC 1200VA", "Printer Canon", "Kursi Kantor", "Kamera Canon EOS")
+        _cbAset = New AppComboBox() With {.PlaceholderText = "Memuat aset..."}
         _dtTanggal = New AppDateBox()
         _dtTanggal.Picker.CustomFormat = "d MMM yyyy"
         _txtBiaya = New AppTextBox() With {.PlaceholderText = "Rp 0"}
@@ -105,33 +108,62 @@ Public Class ucPemeliharaan
         Dim btnCancel As New AppButton() With {.Text = "Batal", .Kind = ButtonKind.Outline, .Location = New Point(20, 510), .Size = New Size(96, 36), .BackColor = Theme.OffWhite}
         AddHandler btnCancel.Click, AddressOf ResetForm
         form.Controls.Add(btnCancel)
-        Dim btnSave As New AppButton() With {.Text = "Simpan Jadwal", .Kind = ButtonKind.Primary, .Location = New Point(128, 510), .Size = New Size(218, 36), .BackColor = Theme.OffWhite}
-        AddHandler btnSave.Click, AddressOf SaveSchedule
-        form.Controls.Add(btnSave)
+        _btnSave = New AppButton() With {.Text = "Simpan Jadwal", .Kind = ButtonKind.Primary, .Location = New Point(128, 510), .Size = New Size(218, 36), .BackColor = Theme.OffWhite}
+        AddHandler _btnSave.Click, AddressOf SaveSchedule
+        form.Controls.Add(_btnSave)
         Controls.Add(form)
 
-        BindPage()
+        AddHandler Me.Load, AddressOf OnControlLoad
     End Sub
+
+    Private Async Sub OnControlLoad(sender As Object, e As EventArgs)
+        Await LoadAllAsync()
+    End Sub
+
+    Private Async Function LoadAllAsync() As Task
+        Try
+            Dim asetJson = Await SupabaseClient.GetJsonAsync("/rest/v1/assets?select=id,asset_code,name&order=name.asc")
+            _assetIds.Clear()
+            Dim asetNames As New List(Of String)()
+            Using doc = JsonDocument.Parse(asetJson)
+                For Each el In doc.RootElement.EnumerateArray()
+                    Dim label = SupabaseClient.GetStr(el, "name") & " (" & SupabaseClient.GetStr(el, "asset_code") & ")"
+                    If Not _assetIds.ContainsKey(label) Then
+                        _assetIds.Add(label, SupabaseClient.GetStr(el, "id"))
+                        asetNames.Add(label)
+                    End If
+                Next
+            End Using
+            _cbAset.PlaceholderText = "Pilih aset"
+            _cbAset.SetItems(asetNames.ToArray())
+
+            Dim raw = Await SupabaseClient.GetJsonAsync("/rest/v1/v_maintenances?order=maintenance_date.desc,created_at.desc")
+            _data.Clear()
+            Using doc = JsonDocument.Parse(raw)
+                For Each el In doc.RootElement.EnumerateArray()
+                    Dim id = SupabaseClient.GetStr(el, "id")
+                    Dim aset = SupabaseClient.GetStr(el, "asset_name")
+                    Dim dt = SupabaseClient.GetDate(el, "maintenance_date")
+                    Dim cost = SupabaseClient.GetDec(el, "cost")
+                    Dim st = SupabaseClient.GetStr(el, "status")
+                    Dim stUi = If(st.Length > 0, Char.ToUpper(st(0)) & st.Substring(1), "Terjadwal")
+                    Dim notes = SupabaseClient.GetStr(el, "notes")
+                    _data.Add(New MaintRow(aset, dt, cost, stUi, id, notes))
+                Next
+            End Using
+            _page = 0
+            BindPage()
+        Catch ex As Exception
+            _lblFooter.Text = "Gagal memuat jadwal dari Supabase."
+            MessageBox.Show("Gagal memuat jadwal pemeliharaan:" & vbCrLf & ex.Message, "Error Supabase", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+    End Function
 
     Private Sub Place(card As Control, caption As String, ctl As Control, y As Integer)
         card.Controls.Add(MakeLabel(caption, 12, Theme.Charcoal, 20, y, FontStyle.Bold))
         ctl.Location = New Point(20, y + 25)
         ctl.Width = 326
         card.Controls.Add(ctl)
-    End Sub
-
-    ' ---------- data & paginasi ----------
-    Private Sub LoadSampleData()
-        ' TODO (Supabase): SELECT dari maintenances JOIN assets ORDER BY maintenance_date DESC.
-        Dim d = Function(day As Integer) New Date(2025, 6, day)
-        _data.Add(New MaintRow("Proyektor Epson", d(26), 250000D, "Terjadwal"))
-        _data.Add(New MaintRow("AC Daikin 1 PK", d(25), 350000D, "Terjadwal"))
-        _data.Add(New MaintRow("Laptop Lenovo", d(24), 150000D, "Proses"))
-        _data.Add(New MaintRow("Printer Epson", d(20), 200000D, "Selesai"))
-        _data.Add(New MaintRow("UPS APC 1200VA", d(18), 400000D, "Selesai"))
-        _data.Add(New MaintRow("Printer Canon", d(15), 175000D, "Selesai"))
-        _data.Add(New MaintRow("AC Daikin 1 PK", d(10), 300000D, "Selesai"))
-        _data.Add(New MaintRow("Kursi Kantor", d(5), 80000D, "Selesai"))
     End Sub
 
     Private Shared Function Rp(v As Decimal) As String
@@ -166,7 +198,7 @@ Public Class ucPemeliharaan
         If e.RowIndex < 0 OrElse e.ColumnIndex <> StatusCol Then Return
         e.PaintBackground(e.CellBounds, False)
         Dim txt = Convert.ToString(e.Value)
-        Dim c As Color = ColorTranslator.FromHtml("#7B6A2C")    ' Terjadwal
+        Dim c As Color = ColorTranslator.FromHtml("#7B6A2C")
         If txt = "Proses" Then c = Theme.Orange
         If txt = "Selesai" Then c = Theme.StatusGreen
         DrawOutlineBadge(e.Graphics, txt, e.CellBounds.X + 8, e.CellBounds.Y + e.CellBounds.Height \ 2, c)
@@ -177,7 +209,7 @@ Public Class ucPemeliharaan
         _grid.Cursor = If(e.RowIndex >= 0 AndAlso e.ColumnIndex = AksiCol, Cursors.Hand, Cursors.Default)
     End Sub
 
-    Private Sub GridMouseClick(sender As Object, e As DataGridViewCellMouseEventArgs)
+    Private Async Sub GridMouseClick(sender As Object, e As DataGridViewCellMouseEventArgs)
         If e.RowIndex < 0 OrElse e.ColumnIndex <> AksiCol Then Return
         Dim r = _data(_page * PageSize + e.RowIndex)
         Dim info = "Aset      : " & r.Aset & vbCrLf &
@@ -186,15 +218,18 @@ Public Class ucPemeliharaan
                    "Status    : " & r.Status
         If r.Catatan <> "" Then info &= vbCrLf & "Catatan   : " & r.Catatan
 
-        ' Catatan: opsi memajukan status ini tambahan di luar desain Figma.
         Dim idx = Array.IndexOf(StatusFlow, r.Status)
         If idx >= 0 AndAlso idx < StatusFlow.Length - 1 Then
             Dim nextStatus = StatusFlow(idx + 1)
             Dim ans = MessageBox.Show(info & vbCrLf & vbCrLf & "Ubah status menjadi """ & nextStatus & """?", "Detail pemeliharaan", MessageBoxButtons.YesNo, MessageBoxIcon.Question)
             If ans = DialogResult.Yes Then
-                ' TODO (Supabase): UPDATE maintenances SET status = ... (dan assets.status = 'maintenance' / 'tersedia')
-                r.Status = nextStatus
-                BindPage()
+                Try
+                    Dim payload As New Dictionary(Of String, Object) From {{"status", nextStatus.ToLower()}}
+                    Await SupabaseClient.PatchJsonAsync($"/rest/v1/maintenances?id=eq.{r.Id}", payload)
+                    Await LoadAllAsync()
+                Catch ex As Exception
+                    MessageBox.Show("Gagal memperbarui status pemeliharaan:" & vbCrLf & ex.Message, "Error Supabase", MessageBoxButtons.OK, MessageBoxIcon.Error)
+                End Try
             End If
         Else
             MessageBox.Show(info, "Detail pemeliharaan", MessageBoxButtons.OK, MessageBoxIcon.Information)
@@ -222,21 +257,36 @@ Public Class ucPemeliharaan
         _txtCatatan.Inner.Text = ""
     End Sub
 
-    Private Sub SaveSchedule(sender As Object, e As EventArgs)
+    Private Async Sub SaveSchedule(sender As Object, e As EventArgs)
         If _cbAset.SelectedItem Is Nothing Then
             MessageBox.Show("Pilih aset yang akan dirawat.", "Data belum lengkap", MessageBoxButtons.OK, MessageBoxIcon.Warning)
             Return
         End If
         Dim digits = DigitsIn(_txtBiaya.Inner.Text)
         Dim biaya As Decimal = If(digits = "", 0D, Decimal.Parse(digits))
+        Dim notes = _txtCatatan.Inner.Text.Trim()
 
-        ' TODO (Supabase): INSERT INTO maintenances (asset_id, user_id, maintenance_date, cost, notes, status).
-        Dim row As New MaintRow(_cbAset.SelectedItem, _dtTanggal.Picker.Value.Date, biaya, "Terjadwal") With {.Catatan = _txtCatatan.Inner.Text.Trim()}
-        _data.Add(row)
-        _data.Sort(Function(a, b) b.Tanggal.CompareTo(a.Tanggal))
-        _page = 0
-        BindPage()
-        ResetForm(sender, e)
-        MessageBox.Show("Jadwal pemeliharaan tersimpan (mode demo).", "Berhasil", MessageBoxButtons.OK, MessageBoxIcon.Information)
+        Dim payload As New Dictionary(Of String, Object) From {
+            {"asset_id", _assetIds(_cbAset.SelectedItem)},
+            {"maintenance_date", _dtTanggal.Picker.Value.ToString("yyyy-MM-dd")},
+            {"cost", biaya},
+            {"notes", If(notes = "", Nothing, notes)},
+            {"status", "terjadwal"}
+        }
+        If Not String.IsNullOrEmpty(SupabaseClient.CurrentUserId) Then
+            payload("user_id") = SupabaseClient.CurrentUserId
+        End If
+
+        _btnSave.Enabled = False
+        Try
+            Await SupabaseClient.PostJsonAsync("maintenances", payload)
+            MessageBox.Show("Jadwal pemeliharaan berhasil disimpan ke Supabase!", "Berhasil", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            ResetForm(sender, e)
+            Await LoadAllAsync()
+        Catch ex As Exception
+            MessageBox.Show("Gagal menyimpan jadwal pemeliharaan:" & vbCrLf & ex.Message, "Error Supabase", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        Finally
+            _btnSave.Enabled = True
+        End Try
     End Sub
 End Class

@@ -68,24 +68,32 @@ Public Class FormLogin
         lblToggle.Text = If(hidden, "Sembunyikan", "Tampilkan")
     End Sub
 
-    Private Sub DoLogin(sender As Object, e As EventArgs)
+    Private Async Sub DoLogin(sender As Object, e As EventArgs)
         lblError.Text = ""
         Dim email = txtEmail.Inner.Text.Trim()
         Dim pass = txtPassword.Inner.Text
         If email = "" OrElse pass = "" Then
-            lblError.Text = "Username/Email dan password wajib diisi."
+            lblError.Text = "Email dan password wajib diisi."
             Return
         End If
 
-        ' TODO (Supabase): ganti blok ini dengan autentikasi sebenarnya,
-        ' mis. POST {SUPABASE_URL}/auth/v1/token?grant_type=password
-        ' Sementara: semua input yang terisi dianggap berhasil.
-        Dim displayName As String = email.Split("@"c)(0)
+        btnLogin.Enabled = False
+        Try
+            Dim result = Await SupabaseClient.SignInAsync(email, pass)
+            If Not result.Ok Then
+                lblError.Text = result.Message
+                Return
+            End If
 
-        Dim main As New FormMain(displayName)
-        AddHandler main.FormClosed, AddressOf OnMainClosed
-        main.Show()
-        Hide()
+            Dim main As New FormMain(SupabaseClient.CurrentUserName)
+            AddHandler main.FormClosed, AddressOf OnMainClosed
+            main.Show()
+            Hide()
+        Catch ex As Exception
+            lblError.Text = "Gagal terhubung ke Supabase: " & ex.Message
+        Finally
+            btnLogin.Enabled = True
+        End Try
     End Sub
 
     Private Sub OnMainClosed(sender As Object, e As FormClosedEventArgs)

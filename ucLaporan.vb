@@ -1,9 +1,12 @@
+Imports System
 Imports System.Drawing.Printing
 Imports System.Globalization
 Imports System.IO
 Imports System.Text
+Imports System.Text.Json
+Imports System.Threading.Tasks
 
-''' <summary>Satu baris laporan aset (nanti dari query assets + categories + locations).</summary>
+''' <summary>Satu baris laporan aset dari view `v_assets` di Supabase.</summary>
 Public Class ReportRow
     Public Property Kode As String
     Public Property Nama As String
@@ -19,7 +22,7 @@ Public Class ReportRow
     End Sub
 End Class
 
-''' <summary>Halaman Laporan: filter periode/kategori, ringkasan, pratinjau, dan export.</summary>
+''' <summary>Halaman Laporan yang terhubung ke Supabase.</summary>
 Public Class ucLaporan
     Inherits UserControl
 
@@ -48,10 +51,9 @@ Public Class ucLaporan
     Public Sub New()
         BackColor = Theme.OffWhite
         DoubleBuffered = True
-        LoadSampleData()
 
         Controls.Add(MakeLabel("Laporan", 26, Theme.Charcoal, 24, 22, FontStyle.Bold))
-        Controls.Add(MakeLabel("Ringkasan inventaris dan transaksi dalam satu tampilan.", 14, Theme.Grey, 24, 62))
+        Controls.Add(MakeLabel("Ringkasan inventaris dan transaksi real-time dari Supabase.", 14, Theme.Grey, 24, 62))
         Dim btnPdf As New AppButton() With {.Text = "Export PDF", .Kind = ButtonKind.Outline, .Location = New Point(822, 30), .Size = New Size(132, 36), .BackColor = Theme.OffWhite}
         AddHandler btnPdf.Click, AddressOf ExportPdf
         Controls.Add(btnPdf)
@@ -63,12 +65,12 @@ Public Class ucLaporan
         Dim filter As New RoundedPanel() With {.Location = New Point(24, 100), .Size = New Size(1078, 106), .Radius = 8}
         _dtStart = New AppDateBox()
         _dtStart.Picker.CustomFormat = "dd MMM yyyy"
-        _dtStart.Picker.Value = New Date(2025, 6, 1)
+        _dtStart.Picker.Value = New Date(2025, 1, 1)
         _dtEnd = New AppDateBox()
         _dtEnd.Picker.CustomFormat = "dd MMM yyyy"
-        _dtEnd.Picker.Value = New Date(2025, 6, 30)
+        _dtEnd.Picker.Value = Date.Today
         _cbKategori = New AppComboBox()
-        _cbKategori.SetItems("Semua kategori", "Elektronik", "Furnitur", "ATK", "Peralatan")
+        _cbKategori.SetItems("Semua kategori")
         _cbKategori.SelectedIndex = 0
         AddFilterField(filter, "Tanggal mulai", _dtStart, 24, 216)
         AddFilterField(filter, "Tanggal akhir", _dtEnd, 256, 216)
@@ -86,7 +88,7 @@ Public Class ucLaporan
         ' ===== Kartu pratinjau (24,316 | 1078 x 356) =====
         Dim card As New RoundedPanel() With {.Location = New Point(24, 316), .Size = New Size(1078, 356), .Radius = 8}
         card.Controls.Add(MakeLabel("Pratinjau laporan aset", 18, Theme.Charcoal, 16, 19, FontStyle.Bold))
-        _lblPeriode = MakeLabel("", 12, Theme.Grey, 822, 21)
+        _lblPeriode = MakeLabel("Memuat...", 12, Theme.Grey, 822, 21)
         card.Controls.Add(_lblPeriode)
 
         _grid = New DataGridView() With {.Location = New Point(16, 60), .Size = New Size(1046, 260)}
@@ -104,14 +106,60 @@ Public Class ucLaporan
         Next
         card.Controls.Add(_grid)
 
-        _lblFooter = MakeLabel("", 12, Theme.Grey, 16, 327)
+        _lblFooter = MakeLabel("Memuat data dari Supabase...", 12, Theme.Grey, 16, 327)
         card.Controls.Add(_lblFooter)
         _pager = New Panel() With {.Location = New Point(760, 326), .Size = New Size(302, 22), .BackColor = Theme.OffWhite}
         card.Controls.Add(_pager)
         Controls.Add(card)
 
-        ApplyFilter()
+        AddHandler Me.Load, AddressOf OnControlLoad
     End Sub
+
+    Private Async Sub OnControlLoad(sender As Object, e As EventArgs)
+        Await LoadFromSupabaseAsync()
+    End Sub
+
+    Private Async Function LoadFromSupabaseAsync() As Task
+        Try
+            Dim asetJson = Await SupabaseClient.GetJsonAsync("/rest/v1/v_assets?order=asset_code.asc")
+            _all.Clear()
+            Using doc = JsonDocument.Parse(asetJson)
+                For Each el In doc.RootElement.EnumerateArray()
+                    Dim kode = SupabaseClient.GetStr(el, "asset_code")
+                    Dim nama = SupabaseClient.GetStr(el, "name")
+                    Dim kat = SupabaseClient.GetStr(el, "category_name")
+                    Dim lok = SupabaseClient.GetStr(el, "location_name")
+                    Dim qty = SupabaseClient.GetInt(el, "quantity")
+                    Dim nilai = SupabaseClient.GetDec(el, "total_value")
+                    Dim tgl = SupabaseClient.GetDate(el, "acquired_date", Date.Today)
+                    _all.Add(New ReportRow(kode, nama, kat, lok, qty, nilai, tgl))
+                Next
+            End Using
+
+            _trxDates.Clear()
+            Dim stJson = Await SupabaseClient.GetJsonAsync("/rest/v1/stock_transactions?select=trx_date")
+            Using doc = JsonDocument.Parse(stJson)
+                For Each el In doc.RootElement.EnumerateArray()
+                    _trxDates.Add(SupabaseClient.GetDate(el, "trx_date").Date)
+                Next
+            End Using
+            Dim lnJson = Await SupabaseClient.GetJsonAsync("/rest/v1/loans?select=loan_date")
+            Using doc = JsonDocument.Parse(lnJson)
+                For Each el In doc.RootElement.EnumerateArray()
+                    _trxDates.Add(SupabaseClient.GetDate(el, "loan_date").Date)
+                Next
+            End Using
+
+            Dim kats = New List(Of String) From {"Semua kategori"}
+            kats.AddRange(_all.Select(Function(x) x.Kategori).Where(Function(x) x <> "").Distinct().OrderBy(Function(x) x))
+            _cbKategori.SetItems(kats.ToArray())
+            _cbKategori.SelectedIndex = 0
+            ApplyFilter()
+        Catch ex As Exception
+            _lblFooter.Text = "Gagal memuat laporan dari Supabase."
+            MessageBox.Show("Gagal memuat laporan:" & vbCrLf & ex.Message, "Error Supabase", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+    End Function
 
     ' ---------- layout helper ----------
     Private Sub AddFilterField(card As Control, caption As String, ctl As Control, x As Integer, w As Integer)
@@ -130,41 +178,19 @@ Public Class ucLaporan
         Return v
     End Function
 
-    ' ---------- data ----------
-    Private Sub LoadSampleData()
-        ' TODO (Supabase): SELECT assets JOIN categories, locations (nilai = price * quantity).
-        Dim d = Function(y As Integer, m As Integer, day As Integer) New Date(y, m, day)
-        _all.Add(New ReportRow("AST-001", "Laptop Lenovo ThinkPad", "Elektronik", "Ruang IT", 12, 174000000D, d(2025, 5, 1)))
-        _all.Add(New ReportRow("AST-002", "Proyektor Epson", "Elektronik", "Ruang Rapat", 3, 28500000D, d(2025, 3, 10)))
-        _all.Add(New ReportRow("AST-003", "Kursi Kantor", "Furnitur", "Gudang A", 48, 72000000D, d(2025, 2, 15)))
-        _all.Add(New ReportRow("AST-004", "AC Daikin 1 PK", "Elektronik", "Ruang Server", 2, 12000000D, d(2025, 4, 20)))
-        _all.Add(New ReportRow("AST-005", "Printer Canon", "Elektronik", "Administrasi", 1, 3500000D, d(2025, 1, 12)))
-        _all.Add(New ReportRow("BRG-006", "Kertas A4 80 gsm", "ATK", "Gudang A", 8, 640000D, d(2025, 6, 2)))
-        _all.Add(New ReportRow("AST-007", "Meja Kerja", "Furnitur", "Ruang Keuangan", 24, 36000000D, d(2025, 6, 16)))
-        _all.Add(New ReportRow("AST-008", "Laptop Lenovo ThinkPad", "Elektronik", "Ruang IT", 5, 72500000D, d(2025, 6, 16)))
-        _all.Add(New ReportRow("AST-009", "Kamera Canon EOS", "Elektronik", "Ruang Rapat", 2, 24000000D, d(2025, 7, 5)))
-        _all.Add(New ReportRow("AST-010", "Speaker Portable", "Elektronik", "Ruang Rapat", 4, 6000000D, d(2025, 2, 2)))
-        _all.Add(New ReportRow("AST-011", "Map Arsip", "ATK", "Gudang B", 120, 1800000D, d(2025, 3, 22)))
-        _all.Add(New ReportRow("AST-012", "Tinta Printer Epson", "ATK", "Gudang A", 16, 2400000D, d(2025, 6, 20)))
-
-        ' TODO (Supabase): hitung dari stock_transactions + loans pada rentang tanggal.
-        For Each day In {3, 5, 6, 9, 10, 12, 16, 18, 19, 20, 23, 24, 26}
-            _trxDates.Add(d(2025, 6, day))
-        Next
-        _trxDates.Add(d(2025, 5, 28))
-        _trxDates.Add(d(2025, 7, 2))
-    End Sub
-
     Private Function Rp(v As Decimal) As String
         Return "Rp " & v.ToString("N0", _id)
     End Function
 
     ' ---------- filter & tampilan ----------
-    Private Sub OnShowClick(sender As Object, e As EventArgs)
+    Private Async Sub OnShowClick(sender As Object, e As EventArgs)
         If _dtEnd.Picker.Value.Date < _dtStart.Picker.Value.Date Then
             MessageBox.Show("Tanggal akhir tidak boleh sebelum tanggal mulai.", "Periode tidak valid", MessageBoxButtons.OK, MessageBoxIcon.Warning)
             Return
         End If
+        Dim prevKat = _cbKategori.SelectedItem
+        Await LoadFromSupabaseAsync()
+        If prevKat IsNot Nothing Then _cbKategori.SelectByText(prevKat)
         ApplyFilter()
     End Sub
 
@@ -173,7 +199,6 @@ Public Class ucLaporan
         _end = _dtEnd.Picker.Value.Date
         Dim kat = If(_cbKategori.SelectedIndex > 0, _cbKategori.SelectedItem, Nothing)
 
-        ' Asumsi: laporan = posisi aset yang sudah tercatat s.d. tanggal akhir (sesuaikan bila perlu).
         _rows = _all.Where(Function(r) r.Tgl <= _end AndAlso (kat Is Nothing OrElse r.Kategori = kat)).OrderBy(Function(r) r.Kode).ToList()
 
         _lblAset.Text = _rows.Sum(Function(r) r.Jumlah).ToString("N0", _id) & " unit"
@@ -212,7 +237,6 @@ Public Class ucLaporan
         BuildPager()
     End Sub
 
-    ' ---------- paginasi:  ‹ 1 2 3 … 155 › ----------
     Private Sub BuildPager()
         _pager.Controls.Clear()
         Dim pc = PageCount()
@@ -282,7 +306,6 @@ Public Class ucLaporan
         Return """" & s.Replace("""", """""") & """"
     End Function
 
-    ''' <summary>Export PDF: buka pratinjau cetak; pilih printer "Microsoft Print to PDF" untuk menyimpan sebagai PDF.</summary>
     Private Sub ExportPdf(sender As Object, e As EventArgs)
         If _rows.Count = 0 Then
             MessageBox.Show("Tidak ada data untuk dicetak.", "Export PDF", MessageBoxButtons.OK, MessageBoxIcon.Information)

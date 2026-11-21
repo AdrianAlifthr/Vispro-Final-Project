@@ -1,7 +1,11 @@
+Imports System
 Imports System.Globalization
+Imports System.Text.Json
+Imports System.Threading.Tasks
 
-''' <summary>Satu data peminjaman (nanti dari tabel loans).</summary>
+''' <summary>Satu data peminjaman dari view `v_loans` di Supabase.</summary>
 Public Class LoanRow
+    Public Property Id As String
     Public Property No As String
     Public Property Peminjam As String
     Public Property Aset As String
@@ -10,9 +14,9 @@ Public Class LoanRow
     Public Property Status As String      ' Dipinjam / Terlambat / Dikembalikan
     Public Property Catatan As String = ""
 
-    Public Sub New(no As String, peminjam As String, aset As String, pinjam As Date, kembali As Date, status As String)
-        Me.No = no : Me.Peminjam = peminjam : Me.Aset = aset
-        TglPinjam = pinjam : TglKembali = kembali : Me.Status = status
+    Public Sub New(no As String, peminjam As String, aset As String, pinjam As Date, kembali As Date, status As String, Optional id As String = "", Optional catatan As String = "")
+        Me.Id = id : Me.No = no : Me.Peminjam = peminjam : Me.Aset = aset
+        TglPinjam = pinjam : TglKembali = kembali : Me.Status = status : Me.Catatan = catatan
     End Sub
 End Class
 
@@ -38,7 +42,7 @@ Public Class LoanStat
     End Property
 End Class
 
-''' <summary>Halaman Peminjaman Aset: ringkasan, filter, daftar, dan dialog Pinjam Aset.</summary>
+''' <summary>Halaman Peminjaman Aset yang terhubung ke Supabase.</summary>
 Public Class ucPeminjaman
     Inherits UserControl
 
@@ -66,7 +70,6 @@ Public Class ucPeminjaman
         _user = userName
         BackColor = Theme.OffWhite
         DoubleBuffered = True
-        LoadSampleData()
 
         ' ===== Judul + tombol =====
         Controls.Add(MakeLabel("Peminjaman Aset", 26, Theme.Charcoal, 24, 22, FontStyle.Bold))
@@ -78,7 +81,7 @@ Public Class ucPeminjaman
         ' ===== 3 kartu ringkasan (y=100) =====
         _statBorrowed = New LoanStat("Sedang dipinjam", "aset aktif") With {.Location = New Point(24, 100)}
         _statLate = New LoanStat("Terlambat", "perlu ditindaklanjuti") With {.Location = New Point(389, 100)}
-        _statReturned = New LoanStat("Dikembalikan bulan ini", "transaksi selesai") With {.Location = New Point(754, 100)}
+        _statReturned = New LoanStat("Dikembalikan", "transaksi selesai") With {.Location = New Point(754, 100)}
         Controls.Add(_statBorrowed)
         Controls.Add(_statLate)
         Controls.Add(_statReturned)
@@ -88,15 +91,15 @@ Public Class ucPeminjaman
         _cbStatus = New AppComboBox() With {.Location = New Point(520, 196), .Width = 200}
         _cbBulan = New AppComboBox() With {.Location = New Point(736, 196), .Width = 200}
         _cbStatus.SetItems("Semua status", "Dipinjam", "Terlambat", "Dikembalikan")
-        _cbBulan.SetItems("Semua bulan", "Juni 2025", "Mei 2025")
+        _cbBulan.SetItems("Semua bulan")
         _cbStatus.SelectedIndex = 0
-        _cbBulan.SelectedIndex = 1
+        _cbBulan.SelectedIndex = 0
         Controls.Add(_txtSearch)
         Controls.Add(_cbStatus)
         Controls.Add(_cbBulan)
-        Dim btnExport As New AppButton() With {.Text = "Export", .Kind = ButtonKind.Outline, .Location = New Point(952, 196), .Size = New Size(150, 36), .BackColor = Theme.OffWhite}
-        AddHandler btnExport.Click, AddressOf OnExportClick
-        Controls.Add(btnExport)
+        Dim btnRefresh As New AppButton() With {.Text = "Refresh", .Kind = ButtonKind.Outline, .Location = New Point(952, 196), .Size = New Size(150, 36), .BackColor = Theme.OffWhite}
+        AddHandler btnRefresh.Click, AddressOf OnRefreshClick
+        Controls.Add(btnRefresh)
 
         ' ===== Kartu daftar (24,252 | 1078 x 428) =====
         Dim card As New RoundedPanel() With {.Location = New Point(24, 252), .Size = New Size(1078, 428), .Radius = 8}
@@ -123,7 +126,7 @@ Public Class ucPeminjaman
         wrap.Controls.Add(_grid)
         card.Controls.Add(wrap)
 
-        _lblFooter = MakeLabel("", 12, Theme.Grey, 16, 386)
+        _lblFooter = MakeLabel("Memuat data dari Supabase...", 12, Theme.Grey, 16, 386)
         card.Controls.Add(_lblFooter)
         Dim btnPrev As New AppButton() With {.Text = "Sebelumnya", .Kind = ButtonKind.Outline, .Location = New Point(790, 376), .Size = New Size(108, 36), .BackColor = Theme.OffWhite}
         AddHandler btnPrev.Click, Sub(s, e) GoPage(_page - 1)
@@ -139,25 +142,56 @@ Public Class ucPeminjaman
         AddHandler _txtSearch.Inner.TextChanged, AddressOf OnFilterChanged
         AddHandler _cbStatus.SelectedIndexChanged, AddressOf OnFilterChanged
         AddHandler _cbBulan.SelectedIndexChanged, AddressOf OnFilterChanged
-
-        ApplyFilter()
+        AddHandler Me.Load, AddressOf OnControlLoad
     End Sub
 
-    ' ---------- data ----------
-    Private Sub LoadSampleData()
-        ' TODO (Supabase): SELECT dari tabel loans JOIN assets. Status "Terlambat" sebaiknya
-        ' dihitung: status = 'dipinjam' AND due_date < CURRENT_DATE.
-        Dim d = Function(m As Integer, day As Integer) New Date(2025, m, day)
-        _all.Add(New LoanRow("PJM-0625-018", "Budi Santoso", "Laptop Lenovo ThinkPad", d(6, 24), d(6, 28), "Dipinjam"))
-        _all.Add(New LoanRow("PJM-0625-017", "Siti Rahmawati", "Proyektor Epson", d(6, 23), d(6, 25), "Dipinjam"))
-        _all.Add(New LoanRow("PJM-0625-016", "Andi Wijaya", "Kamera Canon EOS", d(6, 20), d(6, 23), "Terlambat"))
-        _all.Add(New LoanRow("PJM-0625-015", "Dewi Anggraini", "Laptop Dell Latitude", d(6, 19), d(6, 21), "Dikembalikan"))
-        _all.Add(New LoanRow("PJM-0625-014", "Rizky Maulana", "Speaker Portable", d(6, 18), d(6, 20), "Dikembalikan"))
-        _all.Add(New LoanRow("PJM-0625-013", "Nadia Putri", "Tablet Samsung Tab", d(6, 18), d(6, 22), "Terlambat"))
-        _all.Add(New LoanRow("PJM-0625-012", "Budi Santoso", "Proyektor Epson", d(6, 16), d(6, 18), "Dikembalikan"))
-        _all.Add(New LoanRow("PJM-0625-011", "Andi Wijaya", "Laptop Lenovo ThinkPad", d(6, 12), d(6, 14), "Dikembalikan"))
-        _all.Add(New LoanRow("PJM-0525-010", "Siti Rahmawati", "Kamera Canon EOS", d(5, 28), d(5, 30), "Dikembalikan"))
+    Private Async Sub OnControlLoad(sender As Object, e As EventArgs)
+        Await LoadFromSupabaseAsync()
     End Sub
+
+    Private Async Sub OnRefreshClick(sender As Object, e As EventArgs)
+        Await LoadFromSupabaseAsync()
+    End Sub
+
+    Private Async Function LoadFromSupabaseAsync() As Task
+        Try
+            Dim raw = Await SupabaseClient.GetJsonAsync("/rest/v1/v_loans?order=loan_date.desc,created_at.desc")
+            _all.Clear()
+            Using doc = JsonDocument.Parse(raw)
+                For Each el In doc.RootElement.EnumerateArray()
+                    Dim id = SupabaseClient.GetStr(el, "id")
+                    Dim no = SupabaseClient.GetStr(el, "loan_no")
+                    Dim borrower = SupabaseClient.GetStr(el, "borrower_name")
+                    Dim aset = SupabaseClient.GetStr(el, "asset_name")
+                    Dim tPinjam = SupabaseClient.GetDate(el, "loan_date")
+                    Dim retStr = SupabaseClient.GetStr(el, "return_date")
+                    Dim tKembali = If(retStr <> "", SupabaseClient.GetDate(el, "return_date"), SupabaseClient.GetDate(el, "due_date"))
+                    Dim stDb = SupabaseClient.GetStr(el, "effective_status")
+                    Dim stUi = FormatLoanStatus(stDb)
+                    Dim notes = SupabaseClient.GetStr(el, "notes")
+                    _all.Add(New LoanRow(no, borrower, aset, tPinjam, tKembali, stUi, id, notes))
+                Next
+            End Using
+
+            Dim months = New List(Of String) From {"Semua bulan"}
+            months.AddRange(_all.Select(Function(x) x.TglPinjam.ToString("MMMM yyyy", _id)).Distinct())
+            _cbBulan.SetItems(months.ToArray())
+            _cbBulan.SelectedIndex = 0
+            ApplyFilter()
+        Catch ex As Exception
+            _lblFooter.Text = "Gagal memuat peminjaman dari Supabase."
+            MessageBox.Show("Gagal memuat data peminjaman:" & vbCrLf & ex.Message, "Error Supabase", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+    End Function
+
+    Private Shared Function FormatLoanStatus(dbVal As String) As String
+        Select Case dbVal
+            Case "dipinjam" : Return "Dipinjam"
+            Case "terlambat" : Return "Terlambat"
+            Case "dikembalikan" : Return "Dikembalikan"
+            Case Else : Return dbVal
+        End Select
+    End Function
 
     Private Function NextNo() As String
         Return "PJM-" & Date.Now.ToString("MMyy") & "-" & (_all.Count + 1).ToString("000")
@@ -205,12 +239,12 @@ Public Class ucPeminjaman
         _grid.Rows.Clear()
         Dim skip = _page * PageSize
         For Each r In _view.Skip(skip).Take(PageSize)
-            _grid.Rows.Add(r.No, r.Peminjam, r.Aset, r.TglPinjam.ToString("dd MMM yyyy", _id), r.TglKembali.ToString("dd MMM yyyy", _id), r.Status, If(r.Status = "Terlambat", "Ingatkan", "Detail"))
+            _grid.Rows.Add(r.No, r.Peminjam, r.Aset, r.TglPinjam.ToString("dd MMM yyyy", _id), r.TglKembali.ToString("dd MMM yyyy", _id), r.Status, If(r.Status = "Dikembalikan", "Detail", "Kembalikan"))
         Next
         _grid.ClearSelection()
         Dim first = skip + 1
         Dim last = Math.Min(skip + PageSize, _view.Count)
-        _lblFooter.Text = If(_view.Count = 0, "Tidak ada peminjaman yang cocok.", "Menampilkan " & first & "–" & last & " dari " & _view.Count & " peminjaman")
+        _lblFooter.Text = If(_view.Count = 0, "Belum ada data peminjaman.", "Menampilkan " & first & "–" & last & " dari " & _view.Count & " peminjaman")
         _lblPage.Text = (_page + 1) & " / " & PageCount()
     End Sub
 
@@ -233,15 +267,10 @@ Public Class ucPeminjaman
     Private Sub GridMouseClick(sender As Object, e As DataGridViewCellMouseEventArgs)
         If e.RowIndex < 0 OrElse e.ColumnIndex <> AksiCol Then Return
         Dim r = _view(_page * PageSize + e.RowIndex)
-        If r.Status = "Terlambat" Then
-            ' TODO: kirim pengingat sungguhan (email/WhatsApp) bila diperlukan.
-            MessageBox.Show("Pengingat pengembalian " & r.Aset & " dikirim ke " & r.Peminjam & " (mode demo).", "Ingatkan peminjam", MessageBoxButtons.OK, MessageBoxIcon.Information)
-        Else
-            ShowDetail(r)
-        End If
+        ShowDetail(r)
     End Sub
 
-    Private Sub ShowDetail(r As LoanRow)
+    Private Async Sub ShowDetail(r As LoanRow)
         Dim info = "No. Pinjam    : " & r.No & vbCrLf &
                    "Peminjam      : " & r.Peminjam & vbCrLf &
                    "Aset          : " & r.Aset & vbCrLf &
@@ -250,39 +279,84 @@ Public Class ucPeminjaman
                    "Status        : " & r.Status
         If r.Catatan <> "" Then info &= vbCrLf & "Keperluan     : " & r.Catatan
 
-        ' Catatan: opsi "kembalikan" ini tambahan di luar desain Figma.
         If r.Status = "Dikembalikan" Then
             MessageBox.Show(info, "Detail peminjaman", MessageBoxButtons.OK, MessageBoxIcon.Information)
         Else
             Dim ans = MessageBox.Show(info & vbCrLf & vbCrLf & "Tandai aset ini sudah dikembalikan?", "Detail peminjaman", MessageBoxButtons.YesNo, MessageBoxIcon.Question)
             If ans = DialogResult.Yes Then
-                ' TODO (Supabase): UPDATE loans SET status='dikembalikan', return_date=today; assets.status='tersedia'
-                r.Status = "Dikembalikan"
-                r.TglKembali = Date.Today
-                ApplyFilter()
+                Try
+                    Dim payload As New Dictionary(Of String, Object) From {
+                        {"status", "dikembalikan"},
+                        {"return_date", Date.Today.ToString("yyyy-MM-dd")}
+                    }
+                    Await SupabaseClient.PatchJsonAsync($"/rest/v1/loans?id=eq.{r.Id}", payload)
+                    Await LoadFromSupabaseAsync()
+                Catch ex As Exception
+                    MessageBox.Show("Gagal memperbarui status peminjaman:" & vbCrLf & ex.Message, "Error Supabase", MessageBoxButtons.OK, MessageBoxIcon.Error)
+                End Try
             End If
         End If
     End Sub
 
     ' ---------- aksi ----------
-    Private Sub OnPinjamClick(sender As Object, e As EventArgs)
+    Private Async Sub OnPinjamClick(sender As Object, e As EventArgs)
         Dim owner = FindForm()
         If owner Is Nothing Then Return
-        ' TODO (Supabase): isi daftar peminjam dari users dan aset dari assets WHERE status='tersedia'.
-        Dim peminjam = {"Budi Santoso", "Siti Rahmawati", "Andi Wijaya", "Dewi Anggraini", "Rizky Maulana", "Nadia Putri", "Dimas Saputra", "Rina Lestari"}
-        Dim aset = {"Laptop Lenovo ThinkPad", "Proyektor Epson", "Kamera Canon EOS", "Laptop Dell Latitude", "Speaker Portable", "Tablet Samsung Tab"}
 
-        Using dlg As New DlgPinjamAset(peminjam, aset)
+        Dim peminjamList As New List(Of String)()
+        Dim asetMap As New Dictionary(Of String, String)()
+        Dim asetList As New List(Of String)()
+
+        Try
+            Dim usrJson = Await SupabaseClient.GetJsonAsync("/rest/v1/users?select=full_name&is_active=eq.true&order=full_name.asc")
+            Using doc = JsonDocument.Parse(usrJson)
+                For Each el In doc.RootElement.EnumerateArray()
+                    Dim nm = SupabaseClient.GetStr(el, "full_name")
+                    If nm <> "" AndAlso Not peminjamList.Contains(nm) Then peminjamList.Add(nm)
+                Next
+            End Using
+
+            Dim asetJson = Await SupabaseClient.GetJsonAsync("/rest/v1/assets?select=id,asset_code,name&status=eq.tersedia&order=name.asc")
+            Using doc = JsonDocument.Parse(asetJson)
+                For Each el In doc.RootElement.EnumerateArray()
+                    Dim label = SupabaseClient.GetStr(el, "name") & " (" & SupabaseClient.GetStr(el, "asset_code") & ")"
+                    If Not asetMap.ContainsKey(label) Then
+                        asetMap.Add(label, SupabaseClient.GetStr(el, "id"))
+                        asetList.Add(label)
+                    End If
+                Next
+            End Using
+        Catch ex As Exception
+            MessageBox.Show("Gagal memuat daftar peminjam/aset dari Supabase:" & vbCrLf & ex.Message, "Error Supabase", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return
+        End Try
+
+        If asetList.Count = 0 Then
+            MessageBox.Show("Tidak ada aset dengan status Tersedia untuk dipinjam.", "Aset kosong", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+
+        Using dlg As New DlgPinjamAset(peminjamList.ToArray(), asetList.ToArray())
             If ShowDialogOver(owner, New Rectangle(240, 64, 1126, 704), dlg) <> DialogResult.OK Then Return
-            ' TODO (Supabase): INSERT INTO loans (...) lalu UPDATE assets SET status='dipinjam'.
-            Dim row As New LoanRow(NextNo(), dlg.Peminjam, dlg.Aset, dlg.TglPinjam, dlg.TglKembali, "Dipinjam") With {.Catatan = dlg.Catatan}
-            _all.Insert(0, row)
-            ApplyFilter()
+            Try
+                Dim payload As New Dictionary(Of String, Object) From {
+                    {"loan_no", NextNo()},
+                    {"asset_id", asetMap(dlg.Aset)},
+                    {"borrower_name", dlg.Peminjam},
+                    {"loan_date", dlg.TglPinjam.ToString("yyyy-MM-dd")},
+                    {"due_date", dlg.TglKembali.ToString("yyyy-MM-dd")},
+                    {"status", "dipinjam"},
+                    {"notes", If(dlg.Catatan = "", Nothing, dlg.Catatan)}
+                }
+                If Not String.IsNullOrEmpty(SupabaseClient.CurrentUserId) Then
+                    payload("user_id") = SupabaseClient.CurrentUserId
+                End If
+                Await SupabaseClient.PostJsonAsync("loans", payload)
+                Await LoadFromSupabaseAsync()
+            Catch ex As Exception
+                MessageBox.Show("Gagal menyimpan peminjaman ke Supabase:" & vbCrLf & ex.Message, "Error Supabase", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            End Try
         End Using
-    End Sub
-
-    Private Sub OnExportClick(sender As Object, e As EventArgs)
-        MessageBox.Show("Fitur Export akan dibuat di layar Laporan.", "Export", MessageBoxButtons.OK, MessageBoxIcon.Information)
     End Sub
 End Class
 

@@ -1,4 +1,7 @@
+Imports System
 Imports System.Globalization
+Imports System.Text.Json
+Imports System.Threading.Tasks
 
 ''' <summary>Strip tab "Kategori | Lokasi | Supplier" (tiap tab 160px) sesuai desain.</summary>
 Public Class MasterTabs
@@ -63,18 +66,20 @@ End Class
 ''' <summary>Konfigurasi satu tab Master Data (Kategori / Lokasi / Supplier).</summary>
 Public Class MasterConfig
     Public Property Entity As String          ' "kategori"
+    Public Property TableName As String       ' "categories"
+    Public Property ViewName As String        ' "v_category_totals"
     Public Property Prefix As String          ' "KAT"
-    Public Property Headers As String()       ' judul kolom tabel (tanpa Aksi)
-    Public Property Widths As Integer()       ' lebar kolom (termasuk Aksi)
-    Public Property GridIdx As Integer()      ' indeks isi baris yang tampil di tabel
+    Public Property Headers As String()
+    Public Property Widths As Integer()
+    Public Property GridIdx As Integer()
     Public Property Fields As New List(Of MasterField)
     Public Property HasKodeField As Boolean
-    Public Property TotalIdx As Integer = -1  ' indeks "total aset" (untuk cegah hapus data terpakai)
-    Public Property RowLen As Integer
+    Public Property TotalIdx As Integer = -1
+    Public Property RowLen As Integer         ' Indeks terakhir (RowLen) menyimpan UUID baris dari Supabase
     Public Property Rows As New List(Of String())
 End Class
 
-''' <summary>Panel satu tab: daftar di kiri, form tambah/edit di kanan.</summary>
+''' <summary>Panel satu tab: daftar di kiri, form tambah/edit di kanan (terhubung Supabase).</summary>
 Public Class MasterPane
     Inherits Panel
 
@@ -88,6 +93,7 @@ Public Class MasterPane
     Private ReadOnly _lblCount As Label
     Private ReadOnly _lblFormTitle As Label
     Private ReadOnly _lblFormSub As Label
+    Private ReadOnly _btnSave As AppButton
 
     Public Sub New(cfg As MasterConfig)
         _cfg = cfg
@@ -98,7 +104,7 @@ Public Class MasterPane
         ' ===== Kartu kiri (24,8 | 686 x 464) =====
         Dim pnlLeft As New RoundedPanel() With {.Location = New Point(24, 8), .Size = New Size(686, 464), .Radius = 8}
         pnlLeft.Controls.Add(MakeLabel("Daftar " & ent, 18, Theme.Charcoal, 16, 19, FontStyle.Bold))
-        _lblCount = MakeLabel("", 12, Theme.Grey, 16, 47)
+        _lblCount = MakeLabel("Memuat...", 12, Theme.Grey, 16, 47)
         pnlLeft.Controls.Add(_lblCount)
         _txtSearch = New AppTextBox() With {.Location = New Point(432, 20), .Width = 238, .PlaceholderText = "Cari " & ent & "..."}
         pnlLeft.Controls.Add(_txtSearch)
@@ -133,20 +139,54 @@ Public Class MasterPane
             _editors.Add(tb)
             pnlRight.Controls.Add(tb)
         Next
-        Dim btnSave As New AppButton() With {.Text = "Simpan", .Kind = ButtonKind.Primary, .Location = New Point(24, 404), .Size = New Size(152, 36), .BackColor = Theme.OffWhite}
-        AddHandler btnSave.Click, AddressOf SaveRow
-        pnlRight.Controls.Add(btnSave)
+        _btnSave = New AppButton() With {.Text = "Simpan", .Kind = ButtonKind.Primary, .Location = New Point(24, 404), .Size = New Size(152, 36), .BackColor = Theme.OffWhite}
+        AddHandler _btnSave.Click, AddressOf SaveRow
+        pnlRight.Controls.Add(_btnSave)
         Dim btnCancel As New AppButton() With {.Text = "Batal", .Kind = ButtonKind.Outline, .Location = New Point(192, 404), .Size = New Size(152, 36), .BackColor = Theme.OffWhite}
         AddHandler btnCancel.Click, AddressOf CancelEdit
         pnlRight.Controls.Add(btnCancel)
         Controls.Add(pnlRight)
 
-        Controls.Add(MakeLabel("Data master digunakan di seluruh transaksi dan laporan AsetKu.", 12, Theme.Grey, 24, 492))
+        Controls.Add(MakeLabel("Data master terhubung langsung ke Supabase dan dipakai di seluruh transaksi AsetKu.", 12, Theme.Grey, 24, 492))
 
         AddHandler _txtSearch.Inner.TextChanged, AddressOf OnSearchChanged
         ResetForm()
-        ApplyFilter()
     End Sub
+
+    Public Async Function LoadFromSupabaseAsync() As Task
+        _lblCount.Text = "Memuat..."
+        Try
+            Dim raw = Await SupabaseClient.GetJsonAsync("/rest/v1/" & _cfg.ViewName & "?order=code.asc")
+            _cfg.Rows.Clear()
+            Using doc = JsonDocument.Parse(raw)
+                For Each el In doc.RootElement.EnumerateArray()
+                    Dim id = SupabaseClient.GetStr(el, "id")
+                    Dim code = SupabaseClient.GetStr(el, "code")
+                    Dim name = SupabaseClient.GetStr(el, "name")
+                    Select Case _cfg.TableName
+                        Case "categories"
+                            Dim total = SupabaseClient.GetInt(el, "total_assets").ToString()
+                            Dim desc = SupabaseClient.GetStr(el, "description")
+                            _cfg.Rows.Add({code, name, total, desc, id})
+                        Case "locations"
+                            Dim total = SupabaseClient.GetInt(el, "total_assets").ToString()
+                            Dim pic = SupabaseClient.GetStr(el, "person_in_charge")
+                            _cfg.Rows.Add({code, name, total, pic, id})
+                        Case "suppliers"
+                            Dim phone = SupabaseClient.GetStr(el, "phone")
+                            Dim email = SupabaseClient.GetStr(el, "email")
+                            Dim addr = SupabaseClient.GetStr(el, "address")
+                            _cfg.Rows.Add({code, name, phone, email, addr, id})
+                    End Select
+                Next
+            End Using
+            ResetForm()
+            ApplyFilter()
+        Catch ex As Exception
+            _lblCount.Text = "Gagal memuat"
+            MessageBox.Show("Gagal memuat data " & _cfg.Entity & " dari Supabase:" & vbCrLf & ex.Message, "Error Supabase", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+    End Function
 
     ' ---------- tabel ----------
     Private Sub OnSearchChanged(sender As Object, e As EventArgs)
@@ -256,13 +296,13 @@ Public Class MasterPane
         ResetForm()
     End Sub
 
-    Private Sub SaveRow(sender As Object, e As EventArgs)
+    Private Async Sub SaveRow(sender As Object, e As EventArgs)
         Dim values(_cfg.RowLen - 1) As String
         For i = 0 To values.Length - 1
             values(i) = ""
         Next
         If _editing IsNot Nothing Then
-            Array.Copy(_editing, values, values.Length)   ' pertahankan kolom yang tidak ada di form (mis. total)
+            Array.Copy(_editing, values, _cfg.RowLen)
         End If
         For i = 0 To _cfg.Fields.Count - 1
             values(_cfg.Fields(i).Idx) = _editors(i).Inner.Text.Trim()
@@ -272,20 +312,10 @@ Public Class MasterPane
             MessageBox.Show("Nama " & _cfg.Entity & " wajib diisi.", "Data belum lengkap", MessageBoxButtons.OK, MessageBoxIcon.Warning)
             Return
         End If
-        If Not _cfg.HasKodeField Then
-            values(0) = If(_editing IsNot Nothing, _editing(0), NextKode())
-        Else
-            If values(0) = "" Then
-                MessageBox.Show("Kode " & _cfg.Entity & " wajib diisi.", "Data belum lengkap", MessageBoxButtons.OK, MessageBoxIcon.Warning)
-                Return
-            End If
-            Dim dup = _cfg.Rows.Any(Function(r) Not Object.ReferenceEquals(r, _editing) AndAlso String.Equals(r(0), values(0), StringComparison.OrdinalIgnoreCase))
-            If dup Then
-                MessageBox.Show("Kode " & values(0) & " sudah dipakai.", "Kode duplikat", MessageBoxButtons.OK, MessageBoxIcon.Warning)
-                Return
-            End If
+        If _cfg.HasKodeField AndAlso values(0) = "" Then
+            MessageBox.Show("Kode " & _cfg.Entity & " wajib diisi.", "Data belum lengkap", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
         End If
-        ' validasi email sederhana (hanya supplier punya kolom email di indeks 3 dengan caption "Alamat email")
         For i = 0 To _cfg.Fields.Count - 1
             If _cfg.Fields(i).Caption.ToLower().Contains("email") AndAlso values(_cfg.Fields(i).Idx) <> "" AndAlso Not values(_cfg.Fields(i).Idx).Contains("@") Then
                 MessageBox.Show("Format alamat email tidak valid.", "Email tidak valid", MessageBoxButtons.OK, MessageBoxIcon.Warning)
@@ -293,18 +323,40 @@ Public Class MasterPane
             End If
         Next
 
-        ' TODO (Supabase): INSERT / UPDATE ke tabel categories / locations / suppliers.
-        If _editing Is Nothing Then
-            If _cfg.TotalIdx >= 0 Then values(_cfg.TotalIdx) = "0"
-            _cfg.Rows.Add(values)
-        Else
-            Array.Copy(values, _editing, values.Length)
-        End If
-        ResetForm()
-        ApplyFilter()
+        Dim payload As New Dictionary(Of String, Object)()
+        Select Case _cfg.TableName
+            Case "categories"
+                payload("code") = values(0)
+                payload("name") = values(1)
+                payload("description") = If(values(3) = "", Nothing, values(3))
+            Case "locations"
+                payload("code") = values(0)
+                payload("name") = values(1)
+                payload("person_in_charge") = If(values(3) = "", Nothing, values(3))
+            Case "suppliers"
+                payload("name") = values(1)
+                payload("phone") = If(values(2) = "", Nothing, values(2))
+                payload("email") = If(values(3) = "", Nothing, values(3))
+                payload("address") = If(values(4) = "", Nothing, values(4))
+        End Select
+
+        _btnSave.Enabled = False
+        Try
+            If _editing Is Nothing Then
+                Await SupabaseClient.PostJsonAsync(_cfg.TableName, payload)
+            Else
+                Dim dbId = _editing(_cfg.RowLen)
+                Await SupabaseClient.PatchJsonAsync($"/rest/v1/{_cfg.TableName}?id=eq.{dbId}", payload)
+            End If
+            Await LoadFromSupabaseAsync()
+        Catch ex As Exception
+            MessageBox.Show("Gagal menyimpan data " & _cfg.Entity & " ke Supabase (pastikan role Anda admin):" & vbCrLf & ex.Message, "Error Supabase", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        Finally
+            _btnSave.Enabled = True
+        End Try
     End Sub
 
-    Private Sub DeleteRow(row As String())
+    Private Async Sub DeleteRow(row As String())
         If _cfg.TotalIdx >= 0 Then
             Dim total As Integer
             If Integer.TryParse(row(_cfg.TotalIdx), total) AndAlso total > 0 Then
@@ -312,17 +364,20 @@ Public Class MasterPane
                 Return
             End If
         End If
-        Dim msg = row(1) & " (" & row(0) & ") akan dihapus." & vbCrLf & "Tindakan ini tidak dapat dibatalkan."
-        If ConfirmDialog.Ask(FindForm(), "Hapus " & _cfg.Entity & " ini?", msg, "Hapus") Then
-            ' TODO (Supabase): DELETE FROM ... WHERE code = row(0)  (database juga akan menolak jika masih dipakai FK)
-            _cfg.Rows.Remove(row)
-            If Object.ReferenceEquals(row, _editing) Then ResetForm()
-            ApplyFilter()
-        End If
+        Dim msg = row(1) & " (" & row(0) & ") akan dihapus dari Supabase." & vbCrLf & "Tindakan ini tidak dapat dibatalkan."
+        If Not ConfirmDialog.Ask(FindForm(), "Hapus " & _cfg.Entity & " ini?", msg, "Hapus") Then Return
+
+        Try
+            Dim dbId = row(_cfg.RowLen)
+            Await SupabaseClient.DeleteAsync($"/rest/v1/{_cfg.TableName}?id=eq.{dbId}")
+            Await LoadFromSupabaseAsync()
+        Catch ex As Exception
+            MessageBox.Show("Gagal menghapus " & _cfg.Entity & " dari Supabase:" & vbCrLf & ex.Message, "Error Supabase", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
     End Sub
 End Class
 
-''' <summary>Halaman Master Data dengan tiga tab.</summary>
+''' <summary>Halaman Master Data dengan tiga tab (terhubung Supabase).</summary>
 Public Class ucMasterData
     Inherits UserControl
 
@@ -348,6 +403,13 @@ Public Class ucMasterData
             Controls.Add(p)
         Next
         ShowTab(0)
+        AddHandler Me.Load, AddressOf OnControlLoad
+    End Sub
+
+    Private Async Sub OnControlLoad(sender As Object, e As EventArgs)
+        For Each p In _panes
+            Await p.LoadFromSupabaseAsync()
+        Next
     End Sub
 
     Private Sub OnTabChanged(sender As Object, e As EventArgs)
@@ -360,11 +422,10 @@ Public Class ucMasterData
         Next
     End Sub
 
-    ' TODO (Supabase): ganti data contoh di bawah dengan SELECT dari categories/locations/suppliers
-    ' (kolom "Total aset" = COUNT assets per kategori/lokasi).
     Private Shared Function BuildKategori() As MasterConfig
         Dim c As New MasterConfig() With {
-            .Entity = "kategori", .Prefix = "KAT", .RowLen = 4, .TotalIdx = 2, .HasKodeField = True,
+            .Entity = "kategori", .TableName = "categories", .ViewName = "v_category_totals", .Prefix = "KAT",
+            .RowLen = 4, .TotalIdx = 2, .HasKodeField = True,
             .Headers = {"Kode", "Nama kategori", "Total aset"},
             .Widths = {110, 278, 122, 144},
             .GridIdx = {0, 1, 2}
@@ -372,39 +433,27 @@ Public Class ucMasterData
         c.Fields.Add(New MasterField("Kode kategori", "KAT-009", 0))
         c.Fields.Add(New MasterField("Nama kategori", "Masukkan nama kategori", 1))
         c.Fields.Add(New MasterField("Keterangan", "Keterangan (opsional)", 3))
-        c.Rows.Add({"KAT-001", "Elektronik", "524", ""})
-        c.Rows.Add({"KAT-002", "Furnitur", "350", ""})
-        c.Rows.Add({"KAT-003", "ATK", "225", ""})
-        c.Rows.Add({"KAT-004", "Jaringan & Server", "68", ""})
-        c.Rows.Add({"KAT-005", "Kendaraan", "12", ""})
-        c.Rows.Add({"KAT-006", "Perlengkapan Umum", "21", ""})
-        c.Rows.Add({"KAT-007", "Alat Keselamatan", "32", ""})
-        c.Rows.Add({"KAT-008", "Lainnya", "16", ""})
         Return c
     End Function
 
     Private Shared Function BuildLokasi() As MasterConfig
         Dim c As New MasterConfig() With {
-            .Entity = "lokasi", .Prefix = "LOK", .RowLen = 4, .TotalIdx = 2, .HasKodeField = True,
+            .Entity = "lokasi", .TableName = "locations", .ViewName = "v_location_totals", .Prefix = "LOK",
+            .RowLen = 4, .TotalIdx = 2, .HasKodeField = True,
             .Headers = {"Kode", "Nama lokasi", "Total aset"},
             .Widths = {110, 278, 122, 144},
             .GridIdx = {0, 1, 2}
         }
-        c.Fields.Add(New MasterField("Kode lokasi", "LOK-007", 0))
+        c.Fields.Add(New MasterField("Kode lokasi", "LOK-009", 0))
         c.Fields.Add(New MasterField("Nama lokasi", "Masukkan nama lokasi", 1))
         c.Fields.Add(New MasterField("Penanggung jawab", "Nama penanggung jawab", 3))
-        c.Rows.Add({"LOK-001", "Ruang IT", "286", ""})
-        c.Rows.Add({"LOK-002", "Ruang Server", "168", ""})
-        c.Rows.Add({"LOK-003", "Gudang A", "338", ""})
-        c.Rows.Add({"LOK-004", "Ruang Rapat", "118", ""})
-        c.Rows.Add({"LOK-005", "Kantor Pusat", "312", ""})
-        c.Rows.Add({"LOK-006", "Gudang B", "26", ""})
         Return c
     End Function
 
     Private Shared Function BuildSupplier() As MasterConfig
         Dim c As New MasterConfig() With {
-            .Entity = "supplier", .Prefix = "SUP", .RowLen = 5, .TotalIdx = -1, .HasKodeField = False,
+            .Entity = "supplier", .TableName = "suppliers", .ViewName = "suppliers", .Prefix = "SUP",
+            .RowLen = 5, .TotalIdx = -1, .HasKodeField = False,
             .Headers = {"Kode", "Nama supplier", "Kontak"},
             .Widths = {100, 238, 172, 144},
             .GridIdx = {0, 1, 2}
@@ -413,11 +462,6 @@ Public Class ucMasterData
         c.Fields.Add(New MasterField("No. telepon", "08xx-xxxx-xxxx", 2))
         c.Fields.Add(New MasterField("Alamat email", "email@supplier.co.id", 3))
         c.Fields.Add(New MasterField("Alamat", "Alamat lengkap supplier", 4))
-        c.Rows.Add({"SUP-001", "PT Sinar Teknologi", "021-555-0124", "", ""})
-        c.Rows.Add({"SUP-002", "CV Maju Furnitur", "021-555-0148", "", ""})
-        c.Rows.Add({"SUP-003", "PT Epson Indonesia", "021-555-0162", "", ""})
-        c.Rows.Add({"SUP-004", "CV Berkah Abadi", "021-555-0187", "", ""})
-        c.Rows.Add({"SUP-005", "PT Mitra Jaringan", "021-555-0196", "", ""})
         Return c
     End Function
 End Class

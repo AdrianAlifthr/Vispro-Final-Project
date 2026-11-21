@@ -1,7 +1,11 @@
+Imports System
+Imports System.Text.Json
 Imports System.Text.RegularExpressions
+Imports System.Threading.Tasks
 
-''' <summary>Satu pengguna aplikasi (nanti dari tabel users / Supabase Auth).</summary>
+''' <summary>Satu pengguna aplikasi dari tabel `users` di Supabase.</summary>
 Public Class UserRow
+    Public Property DbId As String
     Public Property Id As String
     Public Property Nama As String
     Public Property Email As String
@@ -9,12 +13,12 @@ Public Class UserRow
     Public Property Role As String        ' Admin / Staff / Viewer
     Public Property Aktif As Boolean = True
 
-    Public Sub New(id As String, nama As String, email As String, username As String, role As String, aktif As Boolean)
-        Me.Id = id : Me.Nama = nama : Me.Email = email : Me.Username = username : Me.Role = role : Me.Aktif = aktif
+    Public Sub New(id As String, nama As String, email As String, username As String, role As String, aktif As Boolean, Optional dbId As String = "")
+        Me.DbId = dbId : Me.Id = id : Me.Nama = nama : Me.Email = email : Me.Username = username : Me.Role = role : Me.Aktif = aktif
     End Sub
 End Class
 
-''' <summary>Halaman Manajemen User.</summary>
+''' <summary>Halaman Manajemen User yang terhubung ke Supabase.</summary>
 Public Class ucUser
     Inherits UserControl
 
@@ -38,7 +42,6 @@ Public Class ucUser
     Public Sub New()
         BackColor = Theme.OffWhite
         DoubleBuffered = True
-        LoadSampleData()
 
         Controls.Add(MakeLabel("Manajemen User", 26, Theme.Charcoal, 24, 22, FontStyle.Bold))
         Controls.Add(MakeLabel("Atur akses pengguna sesuai peran dan tanggung jawab.", 14, Theme.Grey, 24, 62))
@@ -56,7 +59,7 @@ Public Class ucUser
         Controls.Add(_txtSearch)
         Controls.Add(_cbRole)
         Controls.Add(_cbStatus)
-        _lblTotal = MakeLabel("", 12, Theme.Grey, 784, 112)
+        _lblTotal = MakeLabel("Memuat...", 12, Theme.Grey, 784, 112)
         Controls.Add(_lblTotal)
 
         ' ===== Kartu tabel (24,164 | 1078 x 452) =====
@@ -81,7 +84,7 @@ Public Class ucUser
         AddHandler _grid.CellMouseClick, AddressOf GridMouseClick
         card.Controls.Add(_grid)
 
-        _lblFooter = MakeLabel("", 12, Theme.Grey, 16, 417)
+        _lblFooter = MakeLabel("Memuat pengguna dari Supabase...", 12, Theme.Grey, 16, 417)
         card.Controls.Add(_lblFooter)
         Dim prev = MakeLabel("‹", 14, Theme.Grey, 968, 414)
         prev.Cursor = Cursors.Hand
@@ -104,29 +107,35 @@ Public Class ucUser
         AddHandler _txtSearch.Inner.TextChanged, AddressOf OnFilterChanged
         AddHandler _cbRole.SelectedIndexChanged, AddressOf OnFilterChanged
         AddHandler _cbStatus.SelectedIndexChanged, AddressOf OnFilterChanged
-        ApplyFilter()
+        AddHandler Me.Load, AddressOf OnControlLoad
     End Sub
 
-    ' ---------- data ----------
-    Private Sub LoadSampleData()
-        ' TODO (Supabase): SELECT dari tabel users (profil) yang terhubung ke auth.users.
-        _all.Add(New UserRow("USR-001", "Aditya Pratama", "aditya@asetku.co.id", "aditya.pratama", "Admin", True))
-        _all.Add(New UserRow("USR-002", "Siti Rahmawati", "siti@asetku.co.id", "siti.rahmawati", "Staff", True))
-        _all.Add(New UserRow("USR-003", "Budi Santoso", "budi@asetku.co.id", "budi.santoso", "Staff", True))
-        _all.Add(New UserRow("USR-004", "Dewi Anggraini", "dewi@asetku.co.id", "dewi.anggraini", "Viewer", True))
-        _all.Add(New UserRow("USR-005", "Rizky Ramadhan", "rizky@asetku.co.id", "rizky.ramadhan", "Staff", True))
-        _all.Add(New UserRow("USR-006", "Nadia Putri", "nadia@asetku.co.id", "nadia.putri", "Viewer", True))
-        _all.Add(New UserRow("USR-007", "Fajar Hidayat", "fajar@asetku.co.id", "fajar.hidayat", "Admin", True))
-        _all.Add(New UserRow("USR-008", "Rina Lestari", "rina@asetku.co.id", "rina.lestari", "Viewer", False))
+    Private Async Sub OnControlLoad(sender As Object, e As EventArgs)
+        Await LoadFromSupabaseAsync()
     End Sub
 
-    Private Function NextId() As String
-        Dim maxN = 0
-        For Each u In _all
-            Dim n As Integer
-            If Integer.TryParse(u.Id.Replace("USR-", ""), n) Then maxN = Math.Max(maxN, n)
-        Next
-        Return "USR-" & (maxN + 1).ToString("000")
+    Private Async Function LoadFromSupabaseAsync() As Task
+        Try
+            Dim raw = Await SupabaseClient.GetJsonAsync("/rest/v1/users?order=user_code.asc")
+            _all.Clear()
+            Using doc = JsonDocument.Parse(raw)
+                For Each el In doc.RootElement.EnumerateArray()
+                    Dim dbId = SupabaseClient.GetStr(el, "id")
+                    Dim code = SupabaseClient.GetStr(el, "user_code")
+                    Dim nama = SupabaseClient.GetStr(el, "full_name")
+                    Dim email = SupabaseClient.GetStr(el, "email")
+                    Dim uname = SupabaseClient.GetStr(el, "username")
+                    Dim roleDb = SupabaseClient.GetStr(el, "role")
+                    Dim roleUi = If(roleDb.Length > 0, Char.ToUpper(roleDb(0)) & roleDb.Substring(1), "Viewer")
+                    Dim aktif = SupabaseClient.GetBool(el, "is_active")
+                    _all.Add(New UserRow(code, nama, email, uname, roleUi, aktif, dbId))
+                Next
+            End Using
+            ApplyFilter()
+        Catch ex As Exception
+            _lblTotal.Text = "Gagal memuat"
+            MessageBox.Show("Gagal memuat daftar pengguna:" & vbCrLf & ex.Message, "Error Supabase", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
     End Function
 
     ' ---------- filter & paginasi ----------
@@ -247,44 +256,63 @@ Public Class ucUser
     End Sub
 
     ' ---------- aksi ----------
-    Private Sub OnAddClick(sender As Object, e As EventArgs)
+    Private Async Sub OnAddClick(sender As Object, e As EventArgs)
         Dim owner = FindForm()
         If owner Is Nothing Then Return
         Using dlg As New DlgUser(Nothing, _all)
             If ShowDialogOver(owner, owner.ClientRectangle, dlg) <> DialogResult.OK Then Return
-            ' TODO (Supabase): buat akun lewat Supabase Auth (admin createUser) dengan dlg.Password,
-            ' lalu INSERT profil ke tabel users (full_name, email, username, role).
-            _all.Add(New UserRow(NextId(), dlg.NamaLengkap, dlg.Email, dlg.Username, dlg.Role, True))
-            ApplyFilter()
-            GoPage(PageCount() - 1)
+            Try
+                Dim newId = Await SupabaseClient.SignUpUserAsync(dlg.Email, dlg.Password, dlg.NamaLengkap, dlg.Username)
+                If Not String.IsNullOrEmpty(newId) AndAlso dlg.Role.ToLower() <> "viewer" Then
+                    Dim payload As New Dictionary(Of String, Object) From {
+                        {"full_name", dlg.NamaLengkap},
+                        {"username", dlg.Username},
+                        {"role", dlg.Role.ToLower()}
+                    }
+                    Await SupabaseClient.PatchJsonAsync($"/rest/v1/users?id=eq.{newId}", payload)
+                End If
+                MessageBox.Show("User " & dlg.NamaLengkap & " berhasil ditambahkan ke Supabase!", "Berhasil", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                Await LoadFromSupabaseAsync()
+            Catch ex As Exception
+                MessageBox.Show("Gagal menambahkan user ke Supabase:" & vbCrLf & ex.Message, "Error Supabase", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            End Try
         End Using
     End Sub
 
-    Private Sub EditUser(u As UserRow)
+    Private Async Sub EditUser(u As UserRow)
         Dim owner = FindForm()
         If owner Is Nothing Then Return
         Using dlg As New DlgUser(u, _all)
             If ShowDialogOver(owner, owner.ClientRectangle, dlg) <> DialogResult.OK Then Return
-            ' TODO (Supabase): UPDATE users ...; jika dlg.Password tidak kosong, ubah password lewat Auth.
-            u.Nama = dlg.NamaLengkap
-            u.Email = dlg.Email
-            u.Username = dlg.Username
-            u.Role = dlg.Role
-            ApplyFilter()
+            Try
+                Dim payload As New Dictionary(Of String, Object) From {
+                    {"full_name", dlg.NamaLengkap},
+                    {"email", dlg.Email},
+                    {"username", dlg.Username},
+                    {"role", dlg.Role.ToLower()}
+                }
+                Await SupabaseClient.PatchJsonAsync($"/rest/v1/users?id=eq.{u.DbId}", payload)
+                Await LoadFromSupabaseAsync()
+            Catch ex As Exception
+                MessageBox.Show("Gagal memperbarui user di Supabase:" & vbCrLf & ex.Message, "Error Supabase", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            End Try
         End Using
     End Sub
 
-    Private Sub DeleteUser(u As UserRow)
-        If u.Role = "Admin" AndAlso _all.Count(Function(x) x.Role = "Admin") <= 1 Then
-            MessageBox.Show("Admin terakhir tidak dapat dihapus.", "Tidak dapat dihapus", MessageBoxButtons.OK, MessageBoxIcon.Information)
+    Private Async Sub DeleteUser(u As UserRow)
+        If u.Role = "Admin" AndAlso _all.Where(Function(x) x.Role = "Admin" AndAlso x.Aktif).Count() <= 1 Then
+            MessageBox.Show("Admin aktif terakhir tidak dapat dihapus.", "Tidak dapat dihapus", MessageBoxButtons.OK, MessageBoxIcon.Information)
             Return
         End If
-        Dim msg = u.Nama & " (" & u.Id & ") akan dihapus." & vbCrLf & "Tindakan ini tidak dapat dibatalkan."
-        If ConfirmDialog.Ask(FindForm(), "Hapus user ini?", msg, "Hapus User") Then
-            ' TODO (Supabase): hapus/nonaktifkan akun di Auth dan baris di tabel users.
-            _all.Remove(u)
-            ApplyFilter()
-        End If
+        Dim msg = u.Nama & " (" & u.Id & ") akan dinonaktifkan/dihapus dari tabel users." & vbCrLf & "Lanjutkan?"
+        If Not ConfirmDialog.Ask(FindForm(), "Hapus user ini?", msg, "Hapus User") Then Return
+
+        Try
+            Await SupabaseClient.DeleteAsync($"/rest/v1/users?id=eq.{u.DbId}")
+            Await LoadFromSupabaseAsync()
+        Catch ex As Exception
+            MessageBox.Show("Gagal menghapus user di Supabase:" & vbCrLf & ex.Message, "Error Supabase", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
     End Sub
 End Class
 

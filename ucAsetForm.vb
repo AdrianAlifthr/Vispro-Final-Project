@@ -1,7 +1,10 @@
+Imports System
 Imports System.Globalization
 Imports System.IO
+Imports System.Text.Json
+Imports System.Threading.Tasks
 
-''' <summary>Form Tambah / Edit Aset. Tanpa parameter = Tambah, dengan AssetRow = Edit.</summary>
+''' <summary>Form Tambah / Edit Aset yang terhubung ke Supabase.</summary>
 Public Class ucAsetForm
     Inherits UserControl
 
@@ -17,6 +20,11 @@ Public Class ucAsetForm
     Private ReadOnly _cbKondisi As AppComboBox
     Private ReadOnly _txtKet As AppTextBox
     Private ReadOnly _photo As PhotoBox
+    Private ReadOnly _btnSave As AppButton
+
+    Private ReadOnly _kategoriIds As New Dictionary(Of String, String)()
+    Private ReadOnly _lokasiIds As New Dictionary(Of String, String)()
+    Private ReadOnly _supplierIds As New Dictionary(Of String, String)()
 
     Public Sub New(Optional editing As AssetRow = Nothing)
         _editing = editing
@@ -37,24 +45,20 @@ Public Class ucAsetForm
         card.Controls.Add(MakeLabel("Informasi aset", 20, Theme.Charcoal, 24, 14, FontStyle.Bold))
         card.Controls.Add(MakeLabel("Lengkapi data utama aset di bawah ini.", 12, Theme.Grey, 24, 48))
 
-        _txtKode = New AppTextBox()
+        _txtKode = New AppTextBox() With {.PlaceholderText = "Kosongkan = kode otomatis (AST-xxx)"}
         _txtNama = New AppTextBox()
-        _cbKategori = New AppComboBox() With {.PlaceholderText = "Pilih kategori"}
-        _cbLokasi = New AppComboBox() With {.PlaceholderText = "Pilih lokasi"}
-        _cbSupplier = New AppComboBox() With {.PlaceholderText = "Pilih supplier"}
+        _cbKategori = New AppComboBox() With {.PlaceholderText = "Memuat kategori..."}
+        _cbLokasi = New AppComboBox() With {.PlaceholderText = "Memuat lokasi..."}
+        _cbSupplier = New AppComboBox() With {.PlaceholderText = "Memuat supplier..."}
         _dtTanggal = New AppDateBox()
         _txtHarga = New AppTextBox() With {.PlaceholderText = "Rp  0"}
         _txtJumlah = New AppTextBox() With {.PlaceholderText = "1"}
         _cbKondisi = New AppComboBox() With {.PlaceholderText = "Pilih kondisi"}
         _txtKet = New AppTextBox() With {.PlaceholderText = "Tambahkan keterangan"}
 
-        ' TODO (Supabase): isi daftar ini dari tabel categories, locations, suppliers.
-        _cbKategori.SetItems("Elektronik", "Furnitur", "Peralatan", "ATK")
-        _cbLokasi.SetItems("Ruang IT", "Ruang Rapat", "Gudang A", "Ruang Server", "Administrasi", "Ruang Keuangan")
-        _cbSupplier.SetItems("PT Teknologi Nusantara", "CV Mitra Furnitur", "UD Sumber Jaya")
         _cbKondisi.SetItems("Baik", "Rusak ringan", "Rusak berat")
 
-        AddField(card, "Kode Aset *", _txtKode, 0, 0)
+        AddField(card, "Kode Aset", _txtKode, 0, 0)
         AddField(card, "Nama Aset *", _txtNama, 1, 0)
         AddField(card, "Kategori *", _cbKategori, 0, 1)
         AddField(card, "Lokasi *", _cbLokasi, 1, 1)
@@ -83,15 +87,15 @@ Public Class ucAsetForm
         Controls.Add(cardFoto)
 
         ' ===== Catatan + tombol =====
-        Controls.Add(MakeLabel("* Wajib diisi. Data dapat diubah kembali setelah disimpan.", 12, Theme.Grey, 24, 592))
+        Controls.Add(MakeLabel("* Wajib diisi. Kosongkan Kode Aset agar dibuat otomatis oleh Supabase.", 12, Theme.Grey, 24, 592))
         Dim btnCancel As New AppButton() With {.Text = "Batal", .Kind = ButtonKind.Outline, .Location = New Point(814, 636), .Size = New Size(120, 36), .BackColor = Theme.OffWhite}
         AddHandler btnCancel.Click, AddressOf GoBack
         Controls.Add(btnCancel)
-        Dim btnSave As New AppButton() With {.Text = "Simpan", .Kind = ButtonKind.Primary, .Location = New Point(950, 636), .Size = New Size(152, 36), .BackColor = Theme.OffWhite}
-        AddHandler btnSave.Click, AddressOf SaveAsset
-        Controls.Add(btnSave)
+        _btnSave = New AppButton() With {.Text = "Simpan", .Kind = ButtonKind.Primary, .Location = New Point(950, 636), .Size = New Size(152, 36), .BackColor = Theme.OffWhite}
+        AddHandler _btnSave.Click, AddressOf SaveAsset
+        Controls.Add(_btnSave)
 
-        FillInitialValues()
+        AddHandler Me.Load, AddressOf OnControlLoad
     End Sub
 
     ' ---------- layout ----------
@@ -104,18 +108,61 @@ Public Class ucAsetForm
         card.Controls.Add(ctl)
     End Sub
 
+    Private Async Sub OnControlLoad(sender As Object, e As EventArgs)
+        Await LoadDropdownsAsync()
+        FillInitialValues()
+    End Sub
+
+    Private Async Function LoadDropdownsAsync() As Task
+        Try
+            Dim katJson = Await SupabaseClient.GetJsonAsync("/rest/v1/categories?select=id,name&order=name.asc")
+            FillLookup(katJson, _kategoriIds, _cbKategori, "Pilih kategori")
+
+            Dim lokJson = Await SupabaseClient.GetJsonAsync("/rest/v1/locations?select=id,name&order=name.asc")
+            FillLookup(lokJson, _lokasiIds, _cbLokasi, "Pilih lokasi")
+
+            Dim supJson = Await SupabaseClient.GetJsonAsync("/rest/v1/suppliers?select=id,name&order=name.asc")
+            FillLookup(supJson, _supplierIds, _cbSupplier, "Pilih supplier (opsional)")
+        Catch ex As Exception
+            MessageBox.Show("Gagal memuat data master dari Supabase:" & vbCrLf & ex.Message, "Error Supabase", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+    End Function
+
+    Private Shared Sub FillLookup(json As String, map As Dictionary(Of String, String), cb As AppComboBox, placeholder As String)
+        map.Clear()
+        Dim names As New List(Of String)()
+        Using doc = JsonDocument.Parse(json)
+            For Each el In doc.RootElement.EnumerateArray()
+                Dim id = el.GetProperty("id").GetString()
+                Dim name = el.GetProperty("name").GetString()
+                If Not map.ContainsKey(name) Then
+                    map.Add(name, id)
+                    names.Add(name)
+                End If
+            Next
+        End Using
+        cb.PlaceholderText = placeholder
+        cb.SetItems(names.ToArray())
+    End Sub
+
     Private Sub FillInitialValues()
         If _editing Is Nothing Then
-            _txtKode.Inner.Text = "AST-008"   ' TODO (Supabase): hitung kode berikutnya dari DB
             _txtJumlah.Inner.Text = "1"
+            _cbKondisi.SelectByText("Baik")
         Else
             _txtKode.Inner.Text = _editing.Kode
             _txtNama.Inner.Text = _editing.Nama
             _cbKategori.SelectByText(_editing.Kategori)
             _cbLokasi.SelectByText(_editing.Lokasi)
+            If Not String.IsNullOrEmpty(_editing.Supplier) Then _cbSupplier.SelectByText(_editing.Supplier)
             _cbKondisi.SelectByText(_editing.Kondisi)
             _txtJumlah.Inner.Text = _editing.Jumlah.ToString()
-            ' TODO (Supabase): supplier, tanggal, harga, keterangan & foto dari tabel assets.
+            If _editing.Harga > 0D Then
+                _txtHarga.Inner.Text = "Rp  " & _editing.Harga.ToString("N0", New CultureInfo("id-ID"))
+            End If
+            Dim dt As Date
+            If Date.TryParse(_editing.TanggalPerolehan, dt) Then _dtTanggal.Picker.Value = dt
+            _txtKet.Inner.Text = _editing.Keterangan
         End If
     End Sub
 
@@ -148,10 +195,18 @@ Public Class ucAsetForm
         End Using
     End Sub
 
+    Private Shared Function ToDbCondition(uiVal As String) As String
+        Select Case uiVal
+            Case "Baik" : Return "baik"
+            Case "Rusak ringan" : Return "rusak_ringan"
+            Case "Rusak berat" : Return "rusak_berat"
+            Case Else : Return "baik"
+        End Select
+    End Function
+
     ' ---------- simpan / batal ----------
-    Private Sub SaveAsset(sender As Object, e As EventArgs)
+    Private Async Sub SaveAsset(sender As Object, e As EventArgs)
         Dim missing As New List(Of String)
-        If _txtKode.Inner.Text.Trim() = "" Then missing.Add("Kode Aset")
         If _txtNama.Inner.Text.Trim() = "" Then missing.Add("Nama Aset")
         If _cbKategori.SelectedItem Is Nothing Then missing.Add("Kategori")
         If _cbLokasi.SelectedItem Is Nothing Then missing.Add("Lokasi")
@@ -164,10 +219,48 @@ Public Class ucAsetForm
             Return
         End If
 
-        ' TODO (Supabase): INSERT (tambah) atau UPDATE (edit) ke tabel assets,
-        ' lalu unggah foto ke Supabase Storage dan simpan URL-nya di kolom photo_url.
-        MessageBox.Show("Aset " & _txtKode.Inner.Text.Trim() & " berhasil disimpan (mode demo).", "Berhasil", MessageBoxButtons.OK, MessageBoxIcon.Information)
-        GoBack(sender, e)
+        Dim dHarga = DigitsIn(_txtHarga.Inner.Text)
+        Dim harga As Decimal = If(dHarga = "", 0D, Decimal.Parse(dHarga))
+        Dim kode = _txtKode.Inner.Text.Trim()
+        Dim ket = _txtKet.Inner.Text.Trim()
+
+        Dim payload As New Dictionary(Of String, Object) From {
+            {"name", _txtNama.Inner.Text.Trim()},
+            {"category_id", _kategoriIds(_cbKategori.SelectedItem)},
+            {"location_id", _lokasiIds(_cbLokasi.SelectedItem)},
+            {"supplier_id", If(_cbSupplier.SelectedItem IsNot Nothing AndAlso _supplierIds.ContainsKey(_cbSupplier.SelectedItem), _supplierIds(_cbSupplier.SelectedItem), Nothing)},
+            {"acquired_date", _dtTanggal.Picker.Value.ToString("yyyy-MM-dd")},
+            {"price", harga},
+            {"quantity", qty},
+            {"condition", ToDbCondition(_cbKondisi.SelectedItem)},
+            {"description", If(ket = "", Nothing, ket)}
+        }
+        If kode <> "" Then payload("asset_code") = kode
+        If Not String.IsNullOrEmpty(SupabaseClient.CurrentUserId) Then
+            payload("responsible_user_id") = SupabaseClient.CurrentUserId
+        End If
+
+        _btnSave.Enabled = False
+        Try
+            If _editing Is Nothing Then
+                Dim resJson = Await SupabaseClient.PostJsonAsync("assets", payload)
+                Dim savedCode = kode
+                Using doc = JsonDocument.Parse(resJson)
+                    If doc.RootElement.GetArrayLength() > 0 Then
+                        savedCode = doc.RootElement(0).GetProperty("asset_code").GetString()
+                    End If
+                End Using
+                MessageBox.Show("Aset " & savedCode & " berhasil ditambahkan ke Supabase!", "Berhasil", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Else
+                Await SupabaseClient.PatchJsonAsync("/rest/v1/assets?id=eq." & _editing.Id, payload)
+                MessageBox.Show("Aset " & If(kode <> "", kode, _editing.Kode) & " berhasil diperbarui di Supabase!", "Berhasil", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            End If
+            GoBack(sender, e)
+        Catch ex As Exception
+            MessageBox.Show("Gagal menyimpan aset ke Supabase:" & vbCrLf & ex.Message, "Error Supabase", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        Finally
+            _btnSave.Enabled = True
+        End Try
     End Sub
 
     Private Sub GoBack(sender As Object, e As EventArgs)

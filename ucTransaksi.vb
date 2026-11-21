@@ -1,25 +1,29 @@
+Imports System
 Imports System.Globalization
+Imports System.Text.Json
+Imports System.Threading.Tasks
 
 Public Enum TrxMode
     Masuk
     Keluar
 End Enum
 
-''' <summary>Satu baris riwayat transaksi barang (nanti dari tabel stock_transactions).</summary>
+''' <summary>Satu baris riwayat transaksi barang dari view `v_stock_transactions`.</summary>
 Public Class TrxRow
     Public Property No As String
     Public Property Tanggal As Date
     Public Property Barang As String
-    Public Property Pihak As String      ' supplier (masuk) / tujuan (keluar)
-    Public Property Jumlah As String     ' mis. "24 unit"
+    Public Property Pihak As String
+    Public Property Jumlah As String
     Public Property Petugas As String
+    Public Property Catatan As String = ""
 
-    Public Sub New(no As String, tgl As Date, barang As String, pihak As String, jumlah As String, petugas As String)
-        Me.No = no : Tanggal = tgl : Me.Barang = barang : Me.Pihak = pihak : Me.Jumlah = jumlah : Me.Petugas = petugas
+    Public Sub New(no As String, tgl As Date, barang As String, pihak As String, jumlah As String, petugas As String, Optional catatan As String = "")
+        Me.No = no : Tanggal = tgl : Me.Barang = barang : Me.Pihak = pihak : Me.Jumlah = jumlah : Me.Petugas = petugas : Me.Catatan = catatan
     End Sub
 End Class
 
-''' <summary>Halaman Barang Masuk / Barang Keluar (satu komponen, dua mode).</summary>
+''' <summary>Halaman Barang Masuk / Barang Keluar yang terhubung ke Supabase.</summary>
 Public Class ucTransaksi
     Inherits UserControl
 
@@ -28,6 +32,8 @@ Public Class ucTransaksi
     Private ReadOnly _user As String
     Private ReadOnly _id As New CultureInfo("id-ID")
     Private ReadOnly _data As New List(Of TrxRow)
+    Private ReadOnly _assetIds As New Dictionary(Of String, String)()
+    Private ReadOnly _supplierIds As New Dictionary(Of String, String)()
     Private _page As Integer = 0
 
     Private ReadOnly _dtTanggal As AppDateBox
@@ -36,6 +42,7 @@ Public Class ucTransaksi
     Private ReadOnly _cbPihak As AppComboBox
     Private ReadOnly _txtRef As AppTextBox
     Private ReadOnly _txtCatatan As AppTextBox
+    Private ReadOnly _btnSave As AppButton
     Private ReadOnly _grid As DataGridView
     Private ReadOnly _lblFooter As Label
     Private ReadOnly _lblPage As Label
@@ -52,7 +59,6 @@ Public Class ucTransaksi
         _user = If(String.IsNullOrWhiteSpace(userName), "Pengguna", Char.ToUpper(userName(0)) & userName.Substring(1))
         BackColor = Theme.OffWhite
         DoubleBuffered = True
-        LoadSampleData()
 
         Dim judul = If(IsMasuk, "Barang Masuk", "Barang Keluar")
         Controls.Add(MakeLabel(judul, 26, Theme.Charcoal, 24, 22, FontStyle.Bold))
@@ -64,18 +70,16 @@ Public Class ucTransaksi
 
         _dtTanggal = New AppDateBox()
         _dtTanggal.Picker.CustomFormat = "d MMM yyyy"
-        _cbBarang = New AppComboBox() With {.PlaceholderText = "Pilih aset / barang"}
-        _cbBarang.SetItems("Mouse Logitech M170", "Kertas A4 80 gsm", "Laptop Lenovo ThinkPad", "Kursi Kantor", "Tinta Printer Epson", "Map Arsip", "Kabel HDMI 2 meter", "Proyektor Epson", "Printer Canon", "Meja Kerja")
+        _cbBarang = New AppComboBox() With {.PlaceholderText = "Memuat aset..."}
         _txtJumlah = New AppTextBox() With {.PlaceholderText = "1"}
         _txtJumlah.Inner.Text = "1"
         AddHandler _txtJumlah.Inner.KeyPress, AddressOf DigitsOnly
         _cbPihak = New AppComboBox()
         If IsMasuk Then
-            _cbPihak.PlaceholderText = "Pilih supplier"
-            _cbPihak.SetItems("PT Sumber Teknologi", "CV Mitra Kantor", "CV Furni Nusantara", "PT Teknologi Nusantara")   ' TODO (Supabase): tabel suppliers
+            _cbPihak.PlaceholderText = "Memuat supplier..."
         Else
             _cbPihak.PlaceholderText = "Pilih penerima / tujuan"
-            _cbPihak.SetItems("Divisi Operasional", "Divisi Keuangan", "Divisi Administrasi", "Divisi IT", "Ruang Rapat")
+            _cbPihak.SetItems("Divisi Operasional", "Divisi Keuangan", "Divisi Administrasi", "Divisi IT", "Ruang Rapat", "Gudang A")
         End If
         _txtRef = New AppTextBox()
         _txtCatatan = New AppTextBox() With {.PlaceholderText = "Tambahkan catatan (opsional)"}
@@ -90,9 +94,9 @@ Public Class ucTransaksi
         Dim btnCancel As New AppButton() With {.Text = "Batal", .Kind = ButtonKind.Outline, .Location = New Point(694, 158), .Size = New Size(108, 36), .BackColor = Theme.OffWhite}
         AddHandler btnCancel.Click, AddressOf ResetForm
         card.Controls.Add(btnCancel)
-        Dim btnSave As New AppButton() With {.Text = If(IsMasuk, "Simpan Barang Masuk", "Simpan Barang Keluar"), .Kind = ButtonKind.Primary, .Location = New Point(814, 158), .Size = New Size(248, 36), .BackColor = Theme.OffWhite}
-        AddHandler btnSave.Click, AddressOf SaveTrx
-        card.Controls.Add(btnSave)
+        _btnSave = New AppButton() With {.Text = If(IsMasuk, "Simpan Barang Masuk", "Simpan Barang Keluar"), .Kind = ButtonKind.Primary, .Location = New Point(814, 158), .Size = New Size(248, 36), .BackColor = Theme.OffWhite}
+        AddHandler _btnSave.Click, AddressOf SaveTrx
+        card.Controls.Add(_btnSave)
         Controls.Add(card)
 
         ' ===== Kartu riwayat (24,338 | 1078 x 342) =====
@@ -119,7 +123,7 @@ Public Class ucTransaksi
         wrap.Controls.Add(_grid)
         hist.Controls.Add(wrap)
 
-        _lblFooter = MakeLabel("", 12, Theme.Grey, 16, 304)
+        _lblFooter = MakeLabel("Memuat data dari Supabase...", 12, Theme.Grey, 16, 304)
         hist.Controls.Add(_lblFooter)
         Dim btnPrev As New AppButton() With {.Text = "Sebelumnya", .Kind = ButtonKind.Outline, .Location = New Point(795, 294), .Size = New Size(107, 36), .BackColor = Theme.OffWhite}
         AddHandler btnPrev.Click, Sub(s, e) GoPage(_page - 1)
@@ -132,11 +136,76 @@ Public Class ucTransaksi
         hist.Controls.Add(btnNext)
         Controls.Add(hist)
 
-        _txtRef.Inner.Text = NextRef()
-        BindPage()
+        AddHandler Me.Load, AddressOf OnControlLoad
     End Sub
 
-    ' ---------- layout & data ----------
+    Private Async Sub OnControlLoad(sender As Object, e As EventArgs)
+        Await LoadAllAsync()
+    End Sub
+
+    Private Async Function LoadAllAsync() As Task
+        Try
+            ' 1. Dropdown aset
+            Dim asetJson = Await SupabaseClient.GetJsonAsync("/rest/v1/assets?select=id,asset_code,name&order=name.asc")
+            _assetIds.Clear()
+            Dim asetNames As New List(Of String)()
+            Using doc = JsonDocument.Parse(asetJson)
+                For Each el In doc.RootElement.EnumerateArray()
+                    Dim label = SupabaseClient.GetStr(el, "name") & " (" & SupabaseClient.GetStr(el, "asset_code") & ")"
+                    If Not _assetIds.ContainsKey(label) Then
+                        _assetIds.Add(label, SupabaseClient.GetStr(el, "id"))
+                        asetNames.Add(label)
+                    End If
+                Next
+            End Using
+            _cbBarang.PlaceholderText = "Pilih aset / barang"
+            _cbBarang.SetItems(asetNames.ToArray())
+
+            ' 2. Dropdown supplier (khusus masuk)
+            If IsMasuk Then
+                Dim supJson = Await SupabaseClient.GetJsonAsync("/rest/v1/suppliers?select=id,name&order=name.asc")
+                _supplierIds.Clear()
+                Dim supNames As New List(Of String)()
+                Using doc = JsonDocument.Parse(supJson)
+                    For Each el In doc.RootElement.EnumerateArray()
+                        Dim nm = SupabaseClient.GetStr(el, "name")
+                        If Not _supplierIds.ContainsKey(nm) Then
+                            _supplierIds.Add(nm, SupabaseClient.GetStr(el, "id"))
+                            supNames.Add(nm)
+                        End If
+                    Next
+                End Using
+                _cbPihak.PlaceholderText = "Pilih supplier"
+                _cbPihak.SetItems(supNames.ToArray())
+            End If
+
+            ' 3. Riwayat transaksi
+            Dim tipe = If(IsMasuk, "masuk", "keluar")
+            Dim trxJson = Await SupabaseClient.GetJsonAsync($"/rest/v1/v_stock_transactions?type=eq.{tipe}&order=trx_date.desc,created_at.desc")
+            _data.Clear()
+            Using doc = JsonDocument.Parse(trxJson)
+                For Each el In doc.RootElement.EnumerateArray()
+                    Dim refNo = SupabaseClient.GetStr(el, "ref_no")
+                    Dim tgl = SupabaseClient.GetDate(el, "trx_date")
+                    Dim barang = SupabaseClient.GetStr(el, "asset_name")
+                    Dim pihak = If(IsMasuk, SupabaseClient.GetStr(el, "supplier_name"), SupabaseClient.GetStr(el, "destination"))
+                    Dim qty = SupabaseClient.GetInt(el, "quantity")
+                    Dim officer = SupabaseClient.GetStr(el, "officer_name")
+                    Dim notes = SupabaseClient.GetStr(el, "notes")
+                    _data.Add(New TrxRow(refNo, tgl, barang, If(pihak = "", "-", pihak), qty & " unit", If(officer = "", "-", officer), notes))
+                Next
+            End Using
+
+            _txtRef.Inner.Text = NextRef()
+            _page = 0
+            BindPage()
+        Catch ex As Exception
+            _lblFooter.Text = "Gagal memuat data dari Supabase."
+            MessageBox.Show("Gagal memuat transaksi dari Supabase:" & vbCrLf & ex.Message, "Error Supabase", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+    End Function
+
+    ' ---------- layout & helper ----------
     Private Sub Place(card As Control, caption As String, ctl As Control, x As Integer, y As Integer, w As Integer)
         card.Controls.Add(MakeLabel(caption, 12, Theme.Charcoal, x, y, FontStyle.Bold))
         ctl.Location = New Point(x, y + 25)
@@ -144,38 +213,8 @@ Public Class ucTransaksi
         card.Controls.Add(ctl)
     End Sub
 
-    Private Sub LoadSampleData()
-        ' TODO (Supabase): SELECT dari stock_transactions WHERE type = 'masuk' / 'keluar' JOIN assets, users.
-        Dim d = Function(day As Integer) New Date(2025, 6, day)
-        If IsMasuk Then
-            _data.Add(New TrxRow("BM-0625-018", d(24), "Mouse Logitech M170", "PT Sumber Teknologi", "24 unit", "Aditya Pratama"))
-            _data.Add(New TrxRow("BM-0625-017", d(23), "Kertas A4 80 gsm", "CV Mitra Kantor", "50 rim", "Rina Lestari"))
-            _data.Add(New TrxRow("BM-0625-016", d(22), "Laptop Lenovo ThinkPad", "PT Sumber Teknologi", "5 unit", "Aditya Pratama"))
-            _data.Add(New TrxRow("BM-0625-015", d(21), "Kursi Kantor", "CV Furni Nusantara", "12 unit", "Dimas Saputra"))
-            _data.Add(New TrxRow("BM-0625-014", d(20), "Tinta Printer Epson", "CV Mitra Kantor", "16 botol", "Rina Lestari"))
-            _data.Add(New TrxRow("BM-0625-013", d(19), "Printer Canon", "PT Sumber Teknologi", "2 unit", "Aditya Pratama"))
-            _data.Add(New TrxRow("BM-0625-012", d(18), "Kertas A4 80 gsm", "CV Mitra Kantor", "30 rim", "Rina Lestari"))
-            _data.Add(New TrxRow("BM-0625-011", d(17), "Meja Kerja", "CV Furni Nusantara", "6 unit", "Dimas Saputra"))
-        Else
-            _data.Add(New TrxRow("BK-0625-012", d(24), "Kertas A4 80 gsm", "Divisi Keuangan", "10 rim", "Rina Lestari"))
-            _data.Add(New TrxRow("BK-0625-011", d(23), "Mouse Logitech M170", "Divisi Operasional", "4 unit", "Dimas Saputra"))
-            _data.Add(New TrxRow("BK-0625-010", d(22), "Tinta Printer Epson", "Divisi Administrasi", "2 botol", "Aditya Pratama"))
-            _data.Add(New TrxRow("BK-0625-009", d(21), "Map Arsip", "Divisi Keuangan", "20 unit", "Rina Lestari"))
-            _data.Add(New TrxRow("BK-0625-008", d(20), "Kabel HDMI 2 meter", "Ruang Rapat", "3 unit", "Dimas Saputra"))
-            _data.Add(New TrxRow("BK-0625-007", d(19), "Printer Canon", "Divisi IT", "1 unit", "Aditya Pratama"))
-            _data.Add(New TrxRow("BK-0625-006", d(18), "Kertas A4 80 gsm", "Divisi Administrasi", "5 rim", "Rina Lestari"))
-            _data.Add(New TrxRow("BK-0625-005", d(17), "Kursi Kantor", "Ruang Rapat", "4 unit", "Dimas Saputra"))
-        End If
-    End Sub
-
     Private Function NextRef() As String
         Return If(IsMasuk, "BM", "BK") & "-" & Date.Now.ToString("MMyy") & "-" & (_data.Count + 1).ToString("000")
-    End Function
-
-    Private Shared Function UnitFor(barang As String) As String
-        If barang.StartsWith("Kertas") Then Return "rim"
-        If barang.StartsWith("Tinta") Then Return "botol"
-        Return "unit"
     End Function
 
     ' ---------- paginasi ----------
@@ -198,7 +237,7 @@ Public Class ucTransaksi
         _grid.ClearSelection()
         Dim first = skip + 1
         Dim last = Math.Min(skip + PageSize, _data.Count)
-        _lblFooter.Text = If(_data.Count = 0, "Belum ada data.", "Menampilkan " & first & "–" & last & " dari " & _data.Count & " data")
+        _lblFooter.Text = If(_data.Count = 0, "Belum ada transaksi.", "Menampilkan " & first & "–" & last & " dari " & _data.Count & " data")
         _lblPage.Text = (_page + 1) & " / " & PageCount()
     End Sub
 
@@ -210,13 +249,14 @@ Public Class ucTransaksi
     Private Sub GridMouseClick(sender As Object, e As DataGridViewCellMouseEventArgs)
         If e.RowIndex < 0 OrElse e.ColumnIndex <> AksiCol Then Return
         Dim r = _data(_page * PageSize + e.RowIndex)
-        ' TODO: ganti dengan dialog detail transaksi bila ada di desain.
-        MessageBox.Show("No. Transaksi : " & r.No & vbCrLf &
-                        "Tanggal       : " & r.Tanggal.ToString("dd MMM yyyy", _id) & vbCrLf &
-                        "Barang        : " & r.Barang & vbCrLf &
-                        If(IsMasuk, "Supplier      : ", "Tujuan        : ") & r.Pihak & vbCrLf &
-                        "Jumlah        : " & r.Jumlah & vbCrLf &
-                        "Petugas       : " & r.Petugas, "Detail transaksi", MessageBoxButtons.OK, MessageBoxIcon.Information)
+        Dim msg = "No. Transaksi : " & r.No & vbCrLf &
+                  "Tanggal       : " & r.Tanggal.ToString("dd MMM yyyy", _id) & vbCrLf &
+                  "Barang        : " & r.Barang & vbCrLf &
+                  If(IsMasuk, "Supplier      : ", "Tujuan        : ") & r.Pihak & vbCrLf &
+                  "Jumlah        : " & r.Jumlah & vbCrLf &
+                  "Petugas       : " & r.Petugas
+        If r.Catatan <> "" Then msg &= vbCrLf & "Catatan       : " & r.Catatan
+        MessageBox.Show(msg, "Detail transaksi", MessageBoxButtons.OK, MessageBoxIcon.Information)
     End Sub
 
     ' ---------- form ----------
@@ -233,7 +273,7 @@ Public Class ucTransaksi
         _txtRef.Inner.Text = NextRef()
     End Sub
 
-    Private Sub SaveTrx(sender As Object, e As EventArgs)
+    Private Async Sub SaveTrx(sender As Object, e As EventArgs)
         Dim missing As New List(Of String)
         If _cbBarang.SelectedItem Is Nothing Then missing.Add("Aset / Barang")
         Dim qty As Integer
@@ -245,13 +285,34 @@ Public Class ucTransaksi
             Return
         End If
 
-        ' TODO (Supabase): INSERT INTO stock_transactions (asset_id, user_id, type, quantity, trx_date, notes, ...)
-        ' lalu update assets.quantity (+ untuk masuk, - untuk keluar; tolak jika stok tidak cukup).
-        Dim row As New TrxRow(_txtRef.Inner.Text.Trim(), _dtTanggal.Picker.Value.Date, _cbBarang.SelectedItem, _cbPihak.SelectedItem, qty & " " & UnitFor(_cbBarang.SelectedItem), _user)
-        _data.Insert(0, row)
-        _page = 0
-        BindPage()
-        ResetForm(sender, e)
-        MessageBox.Show(If(IsMasuk, "Barang masuk", "Barang keluar") & " tersimpan (mode demo).", "Berhasil", MessageBoxButtons.OK, MessageBoxIcon.Information)
+        Dim notes = _txtCatatan.Inner.Text.Trim()
+        Dim payload As New Dictionary(Of String, Object) From {
+            {"ref_no", _txtRef.Inner.Text.Trim()},
+            {"asset_id", _assetIds(_cbBarang.SelectedItem)},
+            {"type", If(IsMasuk, "masuk", "keluar")},
+            {"quantity", qty},
+            {"trx_date", _dtTanggal.Picker.Value.ToString("yyyy-MM-dd")},
+            {"notes", If(notes = "", Nothing, notes)}
+        }
+        If Not String.IsNullOrEmpty(SupabaseClient.CurrentUserId) Then
+            payload("user_id") = SupabaseClient.CurrentUserId
+        End If
+        If IsMasuk Then
+            payload("supplier_id") = _supplierIds(_cbPihak.SelectedItem)
+        Else
+            payload("destination") = _cbPihak.SelectedItem
+        End If
+
+        _btnSave.Enabled = False
+        Try
+            Await SupabaseClient.PostJsonAsync("stock_transactions", payload)
+            MessageBox.Show(If(IsMasuk, "Barang masuk", "Barang keluar") & " berhasil disimpan ke Supabase dan stok otomatis diperbarui!", "Berhasil", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            ResetForm(sender, e)
+            Await LoadAllAsync()
+        Catch ex As Exception
+            MessageBox.Show("Gagal menyimpan transaksi ke Supabase:" & vbCrLf & ex.Message, "Error Supabase", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        Finally
+            _btnSave.Enabled = True
+        End Try
     End Sub
 End Class

@@ -1,4 +1,8 @@
+Imports System
 Imports System.Drawing.Drawing2D
+Imports System.Globalization
+Imports System.Text.Json
+Imports System.Threading.Tasks
 
 ''' <summary>Strip tab "Informasi | Riwayat Transaksi | Pemeliharaan" sesuai desain.</summary>
 Public Class DetailTabs
@@ -63,13 +67,17 @@ Public Class DetailTabs
     End Sub
 End Class
 
-''' <summary>Halaman Detail Aset: kartu ringkasan, 3 tab, dan aktivitas terakhir.</summary>
+''' <summary>Halaman Detail Aset yang terhubung ke Supabase.</summary>
 Public Class ucAsetDetail
     Inherits UserControl
 
+    Private ReadOnly _id As New CultureInfo("id-ID")
     Private ReadOnly _row As AssetRow
     Private ReadOnly _tabs As DetailTabs
     Private ReadOnly _panels(2) As Panel
+    Private ReadOnly _lblLastTime As Label
+    Private ReadOnly _lblLastTitle As Label
+    Private ReadOnly _lblLastSub As Label
 
     Public Sub New(row As AssetRow)
         _row = row
@@ -91,15 +99,95 @@ Public Class ucAsetDetail
 
         BuildSummaryCard()
         _tabs = BuildTabCard()
-        BuildLatestActivity()
+
+        ' ===== Kartu bawah: aktivitas terakhir =====
+        Dim card As New RoundedPanel() With {.Location = New Point(24, 548), .Size = New Size(1078, 120), .Radius = 8}
+        card.Controls.Add(MakeLabel("Aktivitas terakhir", 18, Theme.Charcoal, 20, 20, FontStyle.Bold))
+        _lblLastTime = MakeLabel("-", 12, Theme.Grey, 20, 58)
+        _lblLastTitle = MakeLabel("Memuat riwayat...", 14, Theme.Charcoal, 224, 56, FontStyle.Bold)
+        _lblLastSub = MakeLabel("", 12, Theme.Grey, 224, 82)
+        card.Controls.Add(_lblLastTime)
+        card.Controls.Add(_lblLastTitle)
+        card.Controls.Add(_lblLastSub)
+        Dim btn As New AppButton() With {.Text = "Lihat riwayat", .Kind = ButtonKind.Outline, .Location = New Point(912, 54), .Size = New Size(144, 36), .BackColor = Theme.OffWhite}
+        AddHandler btn.Click, Sub(s, e) _tabs.SelectedIndex = 1
+        card.Controls.Add(btn)
+        Controls.Add(card)
+
         ShowTab(0)
+        AddHandler Me.Load, AddressOf OnControlLoad
     End Sub
 
-    ' ---------- kartu kiri: ringkasan (24,104 | 340 x 420) ----------
+    Private Async Sub OnControlLoad(sender As Object, e As EventArgs)
+        Await LoadRelatedAsync()
+    End Sub
+
+    Private Async Function LoadRelatedAsync() As Task
+        If String.IsNullOrEmpty(_row.Id) Then Return
+        Try
+            ' 1. Riwayat Transaksi & Peminjaman aset ini
+            Dim historyRows As New List(Of (SortAt As Date, Cells As String()))()
+            Dim stJson = Await SupabaseClient.GetJsonAsync($"/rest/v1/v_stock_transactions?asset_id=eq.{_row.Id}&order=trx_date.desc&limit=5")
+            Using doc = JsonDocument.Parse(stJson)
+                For Each el In doc.RootElement.EnumerateArray()
+                    Dim dt = SupabaseClient.GetDate(el, "trx_date")
+                    Dim tp = SupabaseClient.GetStr(el, "type")
+                    Dim qty = SupabaseClient.GetInt(el, "quantity")
+                    Dim officer = SupabaseClient.GetStr(el, "officer_name")
+                    Dim refNo = SupabaseClient.GetStr(el, "ref_no")
+                    Dim label = If(tp = "masuk", "Barang masuk", "Barang keluar") & " · " & qty & " unit"
+                    historyRows.Add((dt, {dt.ToString("dd MMM yyyy", _id), label, If(officer = "", "-", officer), refNo}))
+                Next
+            End Using
+
+            Dim lnJson = Await SupabaseClient.GetJsonAsync($"/rest/v1/v_loans?asset_id=eq.{_row.Id}&order=loan_date.desc&limit=5")
+            Using doc = JsonDocument.Parse(lnJson)
+                For Each el In doc.RootElement.EnumerateArray()
+                    Dim dt = SupabaseClient.GetDate(el, "loan_date")
+                    Dim st = SupabaseClient.GetStr(el, "effective_status")
+                    Dim borrower = SupabaseClient.GetStr(el, "borrower_name")
+                    Dim loanNo = SupabaseClient.GetStr(el, "loan_no")
+                    Dim label = If(st = "dikembalikan", "Pengembalian aset", "Peminjaman aset")
+                    historyRows.Add((dt, {dt.ToString("dd MMM yyyy", _id), label, borrower, loanNo}))
+                Next
+            End Using
+
+            Dim orderedHist = historyRows.OrderByDescending(Function(x) x.SortAt).Take(4).ToList()
+            RenderHistoryPanel(_panels(1), orderedHist.Select(Function(x) x.Cells).ToList())
+
+            If orderedHist.Count > 0 Then
+                Dim top = orderedHist(0)
+                _lblLastTime.Text = top.Cells(0)
+                _lblLastTitle.Text = top.Cells(1)
+                _lblLastSub.Text = "Oleh " & top.Cells(2) & "  •  Dokumen " & top.Cells(3)
+            Else
+                _lblLastTime.Text = "-"
+                _lblLastTitle.Text = "Belum ada aktivitas untuk aset ini"
+                _lblLastSub.Text = "Transaksi barang masuk/keluar atau peminjaman akan tampil di sini."
+            End If
+
+            ' 2. Pemeliharaan aset ini
+            Dim mRows As New List(Of String())()
+            Dim mtJson = Await SupabaseClient.GetJsonAsync($"/rest/v1/v_maintenances?asset_id=eq.{_row.Id}&order=maintenance_date.desc&limit=4")
+            Using doc = JsonDocument.Parse(mtJson)
+                For Each el In doc.RootElement.EnumerateArray()
+                    Dim dt = SupabaseClient.GetDate(el, "maintenance_date")
+                    Dim notes = SupabaseClient.GetStr(el, "notes")
+                    Dim cost = SupabaseClient.GetDec(el, "cost")
+                    Dim st = SupabaseClient.GetStr(el, "status")
+                    Dim stUi = If(st.Length > 0, Char.ToUpper(st(0)) & st.Substring(1), "-")
+                    mRows.Add({dt.ToString("dd MMM yyyy", _id), If(notes = "", "Perawatan rutin", notes), "Rp " & cost.ToString("N0", _id), stUi})
+                Next
+            End Using
+            RenderMaintenancePanel(_panels(2), mRows)
+        Catch
+            _lblLastTitle.Text = "Gagal memuat riwayat aset"
+        End Try
+    End Function
+
+    ' ---------- kartu kiri: ringkasan ----------
     Private Sub BuildSummaryCard()
         Dim card As New RoundedPanel() With {.Location = New Point(24, 104), .Size = New Size(340, 420), .Radius = 8}
-
-        ' TODO (Supabase): tampilkan foto dari photo_url. Sementara placeholder.
         Dim photo As New RoundedPanel() With {.Location = New Point(20, 16), .Size = New Size(298, 200), .Radius = 6, .FillColor = Theme.BeigeLight, .BorderColor = Theme.BeigeLight}
         photo.Controls.Add(MakeLabel("Belum ada foto", 14, Theme.Grey, 0, 90, FontStyle.Regular, 298, 20))
         DirectCast(photo.Controls(0), Label).TextAlign = ContentAlignment.MiddleCenter
@@ -114,17 +202,16 @@ Public Class ucAsetDetail
         Controls.Add(card)
     End Sub
 
-    ' ---------- kartu kanan: tab (388,104 | 714 x 420) ----------
+    ' ---------- kartu kanan: tab ----------
     Private Function BuildTabCard() As DetailTabs
         Dim card As New RoundedPanel() With {.Location = New Point(388, 104), .Size = New Size(714, 420), .Radius = 8}
-
         For i = 0 To 2
             _panels(i) = New Panel() With {.Location = New Point(1, 49), .Size = New Size(712, 369), .BackColor = Theme.OffWhite}
             card.Controls.Add(_panels(i))
         Next
         BuildInfoPanel(_panels(0))
-        BuildHistoryPanel(_panels(1))
-        BuildMaintenancePanel(_panels(2))
+        RenderHistoryPanel(_panels(1), New List(Of String())())
+        RenderMaintenancePanel(_panels(2), New List(Of String())())
 
         Dim tabs As New DetailTabs() With {.Location = New Point(1, 1)}
         AddHandler tabs.SelectedChanged, AddressOf OnTabChanged
@@ -150,44 +237,48 @@ Public Class ucAsetDetail
     End Sub
 
     Private Sub BuildInfoPanel(p As Panel)
-        ' TODO (Supabase): data di bawah ini contoh; ambil dari tabel assets + suppliers.
+        Dim tglStr = "-"
+        Dim dt As Date
+        If Date.TryParse(_row.TanggalPerolehan, dt) Then tglStr = dt.ToString("d MMMM yyyy", _id)
+        Dim hargaStr = "Rp " & _row.Harga.ToString("N0", _id)
+
         AddInfo(p, "Kategori", _row.Kategori, 0, 0)
         AddInfo(p, "Lokasi", _row.Lokasi, 1, 0)
-        AddInfo(p, "Supplier", "PT Teknologi Nusantara", 0, 1)
-        AddInfo(p, "Tanggal Perolehan", "1 Mei 2025", 1, 1)
-        AddInfo(p, "Harga Perolehan", "Rp 14.500.000", 0, 2)
+        AddInfo(p, "Supplier", If(String.IsNullOrEmpty(_row.Supplier), "-", _row.Supplier), 0, 1)
+        AddInfo(p, "Tanggal Perolehan", tglStr, 1, 1)
+        AddInfo(p, "Harga Perolehan", hargaStr, 0, 2)
         AddInfo(p, "Jumlah", _row.Jumlah & " unit", 1, 2)
         AddInfo(p, "Kondisi", _row.Kondisi, 0, 3)
-        AddInfo(p, "Penanggung Jawab", "Aditya Pratama", 1, 3)
+        AddInfo(p, "Total Nilai", "Rp " & (_row.Harga * _row.Jumlah).ToString("N0", _id), 1, 3)
         p.Controls.Add(New Panel() With {.BackColor = Theme.Beige, .Location = New Point(23, 287), .Size = New Size(666, 1)})
         p.Controls.Add(MakeLabel("Keterangan", 12, Theme.Grey, 23, 302))
-        p.Controls.Add(MakeLabel("Laptop operasional untuk tim IT dan pengembangan sistem.", 14, Theme.Charcoal, 23, 327))
+        p.Controls.Add(MakeLabel(If(String.IsNullOrEmpty(_row.Keterangan), "-", _row.Keterangan), 14, Theme.Charcoal, 23, 327))
     End Sub
 
-    Private Sub BuildHistoryPanel(p As Panel)
+    Private Sub RenderHistoryPanel(p As Panel, rows As List(Of String()))
+        p.Controls.Clear()
         p.Controls.Add(MakeLabel("Riwayat Transaksi", 20, Theme.Charcoal, 23, 21, FontStyle.Bold))
         p.Controls.Add(MakeLabel("Catatan pergerakan dan perubahan stok aset.", 12, Theme.Grey, 23, 54))
-        ' TODO (Supabase): SELECT dari stock_transactions & loans WHERE asset_id = ...
-        Dim rows As New List(Of String())
-        rows.Add({"16 Jun 2025", "Barang masuk · 5 unit", "Aditya Pratama", "BM-202506-001"})
-        rows.Add({"12 Jun 2025", "Pengembalian · 1 unit", "Budi Santoso", "PJM-202506-008"})
-        rows.Add({"10 Jun 2025", "Peminjaman · 1 unit", "Budi Santoso", "PJM-202506-008"})
-        p.Controls.Add(MiniTable({"Tanggal", "Aktivitas", "Petugas", "Referensi"}, {113, 212, 160, 181}, rows, 81))
-        p.Controls.Add(MakeLabel("Menampilkan " & rows.Count & " transaksi", 12, Theme.Grey, 23, 316))
+        If rows.Count > 0 Then
+            p.Controls.Add(MiniTable({"Tanggal", "Aktivitas", "Petugas", "Referensi"}, {113, 212, 160, 181}, rows, 81))
+            p.Controls.Add(MakeLabel("Menampilkan " & rows.Count & " transaksi terakhir", 12, Theme.Grey, 23, 316))
+        Else
+            p.Controls.Add(MakeLabel("Belum ada riwayat transaksi untuk aset ini.", 13, Theme.Grey, 23, 100))
+        End If
     End Sub
 
-    Private Sub BuildMaintenancePanel(p As Panel)
+    Private Sub RenderMaintenancePanel(p As Panel, rows As List(Of String()))
+        p.Controls.Clear()
         p.Controls.Add(MakeLabel("Pemeliharaan aset", 20, Theme.Charcoal, 23, 21, FontStyle.Bold))
         p.Controls.Add(MakeLabel("Jadwal dan catatan perawatan aset ini.", 12, Theme.Grey, 23, 54))
-        ' TODO (Supabase): SELECT dari maintenances WHERE asset_id = ...
-        Dim rows As New List(Of String())
-        rows.Add({"01 Jul 2025", "Pemeriksaan berkala", "Rp 0", "Terjadwal"})
-        rows.Add({"01 Mei 2025", "Pembersihan & servis", "Rp 350.000", "Selesai"})
-        p.Controls.Add(MiniTable({"Tanggal", "Pekerjaan", "Biaya", "Status"}, {113, 263, 140, 150}, rows, 81))
-        p.Controls.Add(MakeLabel("Biaya aktual diperbarui setelah pekerjaan selesai.", 12, Theme.Grey, 23, 316))
+        If rows.Count > 0 Then
+            p.Controls.Add(MiniTable({"Tanggal", "Pekerjaan", "Biaya", "Status"}, {113, 263, 140, 150}, rows, 81))
+            p.Controls.Add(MakeLabel("Biaya aktual diperbarui setelah pekerjaan selesai.", 12, Theme.Grey, 23, 316))
+        Else
+            p.Controls.Add(MakeLabel("Belum ada jadwal pemeliharaan untuk aset ini.", 13, Theme.Grey, 23, 100))
+        End If
     End Sub
 
-    ''' <summary>Tabel kecil berbingkai untuk isi tab (header 40, baris 48).</summary>
     Private Function MiniTable(heads As String(), widths As Integer(), rows As List(Of String()), top As Integer) As Control
         Dim height = 41 + rows.Count * 48
         Dim wrap As New RoundedPanel() With {.Location = New Point(23, top), .Size = New Size(666, height), .Radius = 6}
@@ -206,21 +297,6 @@ Public Class ucAsetDetail
         wrap.Controls.Add(g)
         Return wrap
     End Function
-
-    ' ---------- kartu bawah: aktivitas terakhir (24,548 | 1078 x 120) ----------
-    Private Sub BuildLatestActivity()
-        Dim card As New RoundedPanel() With {.Location = New Point(24, 548), .Size = New Size(1078, 120), .Radius = 8}
-        card.Controls.Add(MakeLabel("Aktivitas terakhir", 18, Theme.Charcoal, 20, 20, FontStyle.Bold))
-        card.Controls.Add(MakeLabel("16 Jun 2025, 09:42", 12, Theme.Grey, 20, 58))
-        card.Controls.Add(MakeLabel("Penambahan stok 5 unit", 14, Theme.Charcoal, 224, 56, FontStyle.Bold))
-        card.Controls.Add(MakeLabel("Oleh Aditya Pratama  •  Dokumen BM-202506-001", 12, Theme.Grey, 224, 82))
-        Dim btn As New AppButton() With {.Text = "Lihat riwayat", .Kind = ButtonKind.Outline, .Location = New Point(912, 54), .Size = New Size(144, 36), .BackColor = Theme.OffWhite}
-        AddHandler btn.Click, Sub(s, e)
-                                  _tabs.SelectedIndex = 1
-                              End Sub
-        card.Controls.Add(btn)
-        Controls.Add(card)
-    End Sub
 
     ' ---------- navigasi ----------
     Private Sub OnEditClick(sender As Object, e As EventArgs)

@@ -59,7 +59,8 @@ Public Class FormMain
                                  End Sub
         topbar.Controls.Add(avatar)
         topbar.Controls.Add(MakeLabel(Capitalize(_userName), 12, Theme.Charcoal, 892, 14, FontStyle.Bold))
-        topbar.Controls.Add(MakeLabel("Administrator", 12, Theme.Grey, 892, 34))
+        Dim roleLabel = If(String.IsNullOrEmpty(SupabaseClient.CurrentUserRole), "Pengguna", Capitalize(SupabaseClient.CurrentUserRole))
+        topbar.Controls.Add(MakeLabel(roleLabel, 12, Theme.Grey, 892, 34))
         Controls.Add(topbar)
 
         ' ===== AREA KONTEN =====
@@ -106,7 +107,7 @@ Public Class FormMain
         For Each old As Control In _content.Controls.Cast(Of Control).ToList()
             _content.Controls.Remove(old)
             Dim o As Control = old
-            BeginInvoke(Sub() o.Dispose())   ' dibuang setelah event yang sedang berjalan selesai
+            BeginInvoke(Sub() o.Dispose())
         Next
         page.Dock = DockStyle.Fill
         _content.Controls.Add(page)
@@ -132,6 +133,6 @@ Public Class ucPlaceholder
     Public Sub New(title As String)
         BackColor = Theme.OffWhite
         Controls.Add(MakeLabel(title, 24, Theme.Charcoal, 24, 24, FontStyle.Bold))
-        Controls.Add(MakeLabel("Halaman ini belum dibuat. Kirim link frame Figma-nya untuk dikodekan.", 14, Theme.Grey, 24, 66))
+        Controls.Add(MakeLabel("Halaman ini belum dibuat.", 14, Theme.Grey, 24, 66))
     End Sub
 End Class
