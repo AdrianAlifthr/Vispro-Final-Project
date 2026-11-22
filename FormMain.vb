@@ -1,55 +1,37 @@
-Imports System.Drawing.Drawing2D
+﻿Imports System.Drawing.Drawing2D
 
-Public Class FormMain
-    Inherits Form
-
+Public Partial Class FormMain
     Private ReadOnly _userName As String
     Private ReadOnly _menuItems As New List(Of SidebarItem)
-    Private ReadOnly _content As Panel
-    Private ReadOnly _lblTitle As Label
-
     Private Shared ReadOnly MenuNames As String() = {
         "Dashboard", "Data Aset / Barang", "Barang Masuk", "Barang Keluar",
         "Peminjaman Aset", "Pemeliharaan", "Master Data", "Laporan", "Manajemen User"}
 
+    Public Sub New()
+        Me.New("Pengguna")
+    End Sub
+
     Public Sub New(userName As String)
         _userName = If(String.IsNullOrWhiteSpace(userName), "Pengguna", userName)
-
-        Text = "AsetKu - Inventaris & Manajemen Aset"
-        ClientSize = New Size(1366, 768)
-        StartPosition = FormStartPosition.CenterScreen
-        FormBorderStyle = FormBorderStyle.FixedSingle
-        MaximizeBox = False
-        BackColor = Theme.OffWhite
+        InitializeComponent()
         DoubleBuffered = True
-
-        ' ===== SIDEBAR (240px, Dark Charcoal) =====
-        Dim sidebar As New Panel() With {.Location = New Point(0, 0), .Size = New Size(240, 768), .BackColor = Theme.Charcoal}
-        sidebar.Controls.Add(MakeLabel("AsetKu", 28, Theme.OffWhite, 24, 26, FontStyle.Bold))
-        sidebar.Controls.Add(New Panel() With {.BackColor = Theme.Orange, .Location = New Point(132, 48), .Size = New Size(8, 8)})
-        sidebar.Controls.Add(MakeLabel("INVENTORY && ASSET", 11, Theme.Beige, 24, 70))
-
-        For i = 0 To MenuNames.Length - 1
-            Dim item As New SidebarItem(MenuNames(i)) With {.Location = New Point(12, 116 + i * 48), .Tag = i}
+        lblUserName.Text = Capitalize(_userName)
+        _menuItems.AddRange({menu0, menu1, menu2, menu3, menu4, menu5, menu6, menu7, menu8})
+        For Each item In _menuItems
             AddHandler item.Click, AddressOf OnMenuClick
-            _menuItems.Add(item)
-            sidebar.Controls.Add(item)
         Next
-
-        sidebar.Controls.Add(New Panel() With {.BackColor = Theme.Grey, .Location = New Point(24, 620), .Size = New Size(192, 1)})
-        sidebar.Controls.Add(MakeLabel("Bantuan && panduan", 12, Theme.Beige, 24, 644))
-        sidebar.Controls.Add(MakeLabel("AsetKu Desktop  •  v1.0", 12, Theme.Beige, 24, 710))
-        Controls.Add(sidebar)
-
-        ' ===== TOP BAR (64px) =====
-        Dim topbar As New Panel() With {.Location = New Point(240, 0), .Size = New Size(1126, 64), .BackColor = Theme.OffWhite}
         AddHandler topbar.Paint, AddressOf TopbarPaint
-        _lblTitle = MakeLabel("Inventaris", 18, Theme.Charcoal, 24, 20, FontStyle.Bold)
-        topbar.Controls.Add(_lblTitle)
+        AddHandler avatar.Paint, AddressOf AvatarPaint
+    End Sub
 
-        Dim search As New AppTextBox() With {.Location = New Point(478, 14), .Width = 288, .PlaceholderText = "Cari aset, transaksi...", .BackColor = Theme.OffWhite}
-        topbar.Controls.Add(search)
+    Protected Overrides Sub OnLoad(e As EventArgs)
+        MyBase.OnLoad(e)
+        If Not DesignMode AndAlso Not System.ComponentModel.LicenseManager.UsageMode = System.ComponentModel.LicenseUsageMode.Designtime Then
+            NavigateTo(0)
+        End If
+    End Sub
 
+<<<<<<< Updated upstream
         topbar.Controls.Add(New Label() With {.Text = ChrW(&HD83D) & ChrW(&HDD14), .Font = New Font("Segoe UI Emoji", 14, GraphicsUnit.Pixel), .ForeColor = Theme.Grey, .AutoSize = True, .Location = New Point(792, 20), .BackColor = Color.Transparent})
 
         Dim avatar As New Panel() With {.Location = New Point(848, 16), .Size = New Size(32, 32), .BackColor = Theme.OffWhite}
@@ -68,6 +50,11 @@ Public Class FormMain
         Controls.Add(_content)
 
         NavigateTo(0)
+=======
+    Private Sub AvatarPaint(sender As Object, e As PaintEventArgs)
+        FillRounded(e.Graphics, New Rectangle(0, 0, 31, 31), 6, Theme.Beige)
+        DrawText(e.Graphics, Initials(_userName), AppFont(12, FontStyle.Bold), Theme.Charcoal, New Rectangle(0, 0, 32, 32), StringAlignment.Center)
+>>>>>>> Stashed changes
     End Sub
 
     Private Sub TopbarPaint(sender As Object, e As PaintEventArgs)

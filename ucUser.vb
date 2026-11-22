@@ -299,9 +299,15 @@ Public Class ucUser
         End Using
     End Sub
 
+<<<<<<< Updated upstream
     Private Async Sub DeleteUser(u As UserRow)
         If u.Role = "Admin" AndAlso _all.Where(Function(x) x.Role = "Admin" AndAlso x.Aktif).Count() <= 1 Then
             MessageBox.Show("Admin aktif terakhir tidak dapat dihapus.", "Tidak dapat dihapus", MessageBoxButtons.OK, MessageBoxIcon.Information)
+=======
+    Private Sub DeleteUser(u As UserRow)
+        If u.Role = "Admin" AndAlso _all.Where(Function(x) x.Role = "Admin").Count() <= 1 Then
+            MessageBox.Show("Admin terakhir tidak dapat dihapus.", "Tidak dapat dihapus", MessageBoxButtons.OK, MessageBoxIcon.Information)
+>>>>>>> Stashed changes
             Return
         End If
         Dim msg = u.Nama & " (" & u.Id & ") akan dinonaktifkan/dihapus dari tabel users." & vbCrLf & "Lanjutkan?"
