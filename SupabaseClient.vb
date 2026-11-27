@@ -12,7 +12,11 @@ Public Module SupabaseClient
     Public AccessToken As String = ""
     Public CurrentUserId As String = ""
     Public CurrentUserName As String = ""
+    Public CurrentUserCode As String = ""
     Public CurrentUserRole As String = ""
+    Public CurrentDivisionId As String = ""
+    Public CurrentDivisionName As String = ""
+    Public IsDemoSession As Boolean = False
 
     Private ReadOnly _http As New HttpClient()
 
@@ -29,6 +33,7 @@ Public Module SupabaseClient
     End Function
 
     Public Async Function SignInAsync(email As String, password As String) As Task(Of (Ok As Boolean, Message As String))
+        ClearSession()
         Dim body = JsonSerializer.Serialize(New With {.email = email, .password = password})
         Using req = CreateRequest(HttpMethod.Post, "/auth/v1/token?grant_type=password", body, True)
             Dim res = Await _http.SendAsync(req)
@@ -44,20 +49,87 @@ Public Module SupabaseClient
         End Using
 
         ' Ambil profil & role dari tabel public.users
-        Dim profileJson = Await GetJsonAsync($"/rest/v1/users?id=eq.{CurrentUserId}&select=full_name,role,is_active")
+        Dim profileJson = Await GetJsonAsync($"/rest/v1/users?id=eq.{CurrentUserId}&select=full_name,user_code,role,is_active")
         Using doc = JsonDocument.Parse(profileJson)
             If doc.RootElement.GetArrayLength() = 0 Then
+                ClearSession()
                 Return (False, "Profil pengguna tidak ditemukan di tabel users.")
             End If
             Dim u = doc.RootElement(0)
             If Not GetBool(u, "is_active") Then
+                ClearSession()
                 Return (False, "Akun ini sedang dinonaktifkan.")
             End If
             CurrentUserName = GetStr(u, "full_name")
+            CurrentUserCode = GetStr(u, "user_code")
             CurrentUserRole = GetStr(u, "role")
         End Using
 
+        If String.Equals(CurrentUserRole, "staff", StringComparison.OrdinalIgnoreCase) Then
+            Try
+                Dim divisionJson = Await GetJsonAsync($"/rest/v1/users?id=eq.{CurrentUserId}&select=division_id,divisions(name)")
+                Using doc = JsonDocument.Parse(divisionJson)
+                    Dim profile = doc.RootElement(0)
+                    CurrentDivisionId = GetStr(profile, "division_id")
+                    Dim division As JsonElement
+                    If profile.TryGetProperty("divisions", division) AndAlso division.ValueKind = JsonValueKind.Object Then
+                        CurrentDivisionName = GetStr(division, "name")
+                    End If
+                End Using
+            Catch
+                ClearSession()
+                Return (False, "Profil divisi belum tersedia. Hubungi pengelola database.")
+            End Try
+            If String.IsNullOrWhiteSpace(CurrentDivisionId) Then
+                ClearSession()
+                Return (False, "Akun ini belum terhubung ke divisi.")
+            End If
+        End If
+
         Return (True, "")
+    End Function
+
+    Public Sub ClearSession()
+        IsDemoSession = False
+        AccessToken = ""
+        CurrentUserId = ""
+        CurrentUserName = ""
+        CurrentUserCode = ""
+        CurrentUserRole = ""
+        CurrentDivisionId = ""
+        CurrentDivisionName = ""
+    End Sub
+
+    Public Sub StartDemoSession(role As String, Optional demoUserId As String = "demo-user-it")
+        Dim demoUser As DemoData.DemoUser = Nothing
+        If role <> "admin" Then
+            demoUser = DemoData.Users().SingleOrDefault(Function(u) u.Id = demoUserId AndAlso u.Active)
+            If demoUser Is Nothing Then Throw New InvalidOperationException("Akun demo tidak ditemukan atau sudah dinonaktifkan.")
+        End If
+        ClearSession()
+        IsDemoSession = True
+        CurrentUserRole = role
+        If role = "admin" Then
+            CurrentUserId = "demo-admin"
+            CurrentUserName = "Admin Demo"
+            CurrentUserCode = "ADM-DEMO"
+        Else
+            CurrentUserId = demoUser.Id
+            CurrentUserCode = demoUser.Code
+            CurrentUserName = demoUser.Name
+            CurrentDivisionId = demoUser.DivisionId
+            CurrentDivisionName = demoUser.DivisionName
+        End If
+    End Sub
+
+    Public Async Function RpcAsync(name As String, payload As Object) As Task(Of String)
+        Dim body = JsonSerializer.Serialize(payload)
+        Using req = CreateRequest(HttpMethod.Post, "/rest/v1/rpc/" & name, body)
+            Dim res = Await _http.SendAsync(req)
+            Dim raw = Await res.Content.ReadAsStringAsync()
+            If Not res.IsSuccessStatusCode Then Throw New Exception(raw)
+            Return raw
+        End Using
     End Function
 
     ''' <summary>Mendaftarkan akun baru lewat Supabase Auth tanpa mengganti sesi admin saat ini.</summary>

@@ -16,6 +16,7 @@ Public Class AssetRow
     Public Property TanggalPerolehan As String
     Public Property Harga As Decimal
     Public Property Keterangan As String
+    Public Property RequestKind As String
 
     Public Sub New(kode As String, nama As String, kategori As String, lokasi As String, jumlah As Integer, kondisi As String, status As String,
                    Optional id As String = "", Optional supplier As String = "", Optional tanggalPerolehan As String = "",
@@ -163,7 +164,9 @@ Public Class ucAsetList
                     Dim kondisiUi = FormatCondition(condDb)
                     Dim statusUi = FormatStatus(statusDb, lowStock)
 
-                    _all.Add(New AssetRow(kode, nama, kategori, lokasi, jumlah, kondisiUi, statusUi, id, supplier, tgl, harga, ket))
+                    Dim row = New AssetRow(kode, nama, kategori, lokasi, jumlah, kondisiUi, statusUi, id, supplier, tgl, harga, ket)
+                    row.RequestKind = SupabaseClient.GetStr(el, "request_kind")
+                    _all.Add(row)
                 Next
             End Using
 

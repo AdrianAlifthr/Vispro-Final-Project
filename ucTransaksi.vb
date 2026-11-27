@@ -274,6 +274,10 @@ Public Class ucTransaksi
     End Sub
 
     Private Async Sub SaveTrx(sender As Object, e As EventArgs)
+        If Not IsMasuk Then
+            MessageBox.Show("Barang keluar dibuat oleh divisi melalui pengajuan dan dicatat saat admin menyerahkan barang.", "Gunakan Verifikasi Pengajuan")
+            Return
+        End If
         Dim missing As New List(Of String)
         If _cbBarang.SelectedItem Is Nothing Then missing.Add("Aset / Barang")
         Dim qty As Integer

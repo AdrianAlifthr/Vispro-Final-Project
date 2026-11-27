@@ -200,6 +200,7 @@ End Class
 Public Class AppTextBox
     Inherits Panel
 
+    <System.ComponentModel.Browsable(False), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)>
     Public ReadOnly Property Inner As TextBox
     Private _focus As Boolean = False
 
@@ -225,6 +226,16 @@ Public Class AppTextBox
         End Get
         Set(value As String)
             Inner.PlaceholderText = value
+        End Set
+    End Property
+
+    <System.ComponentModel.DefaultValue(False)>
+    Public Property UseSystemPasswordChar As Boolean
+        Get
+            Return Inner.UseSystemPasswordChar
+        End Get
+        Set(value As Boolean)
+            Inner.UseSystemPasswordChar = value
         End Set
     End Property
 
@@ -261,6 +272,10 @@ Public Class SidebarItem
     Public Property IsActive As Boolean = False
     Public Property Icon As Image   ' opsional: ekspor ikon 18x18 putih dari Figma
     Private _hover As Boolean = False
+
+    Public Sub New()
+        Me.New("Menu")
+    End Sub
 
     Public Sub New(caption As String)
         SetStyle(ControlStyles.AllPaintingInWmPaint Or ControlStyles.OptimizedDoubleBuffer Or ControlStyles.UserPaint, True)

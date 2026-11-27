@@ -54,6 +54,10 @@ Public Class ucLaporan
 
         Controls.Add(MakeLabel("Laporan", 26, Theme.Charcoal, 24, 22, FontStyle.Bold))
         Controls.Add(MakeLabel("Ringkasan inventaris dan transaksi real-time dari Supabase.", 14, Theme.Grey, 24, 62))
+        Dim history As New AppButton() With {.Text = "Riwayat Keluar & Pinjam", .Kind = ButtonKind.Outline,
+            .Location = New Point(582, 30), .Size = New Size(224, 36), .BackColor = Theme.OffWhite}
+        AddHandler history.Click, Sub(s, e) TryCast(FindForm(), FormMain)?.ShowPage(New ucHistoryReport(), 7, "Laporan")
+        Controls.Add(history)
         Dim btnPdf As New AppButton() With {.Text = "Export PDF", .Kind = ButtonKind.Outline, .Location = New Point(822, 30), .Size = New Size(132, 36), .BackColor = Theme.OffWhite}
         AddHandler btnPdf.Click, AddressOf ExportPdf
         Controls.Add(btnPdf)

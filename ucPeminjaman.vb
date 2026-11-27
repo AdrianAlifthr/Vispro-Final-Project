@@ -13,6 +13,7 @@ Public Class LoanRow
     Public Property TglKembali As Date
     Public Property Status As String      ' Dipinjam / Terlambat / Dikembalikan
     Public Property Catatan As String = ""
+    Public Property RequestId As String = ""
 
     Public Sub New(no As String, peminjam As String, aset As String, pinjam As Date, kembali As Date, status As String, Optional id As String = "", Optional catatan As String = "")
         Me.Id = id : Me.No = no : Me.Peminjam = peminjam : Me.Aset = aset
@@ -169,7 +170,9 @@ Public Class ucPeminjaman
                     Dim stDb = SupabaseClient.GetStr(el, "effective_status")
                     Dim stUi = FormatLoanStatus(stDb)
                     Dim notes = SupabaseClient.GetStr(el, "notes")
-                    _all.Add(New LoanRow(no, borrower, aset, tPinjam, tKembali, stUi, id, notes))
+                    Dim row = New LoanRow(no, borrower, aset, tPinjam, tKembali, stUi, id, notes)
+                    row.RequestId = SupabaseClient.GetStr(el, "request_id")
+                    _all.Add(row)
                 Next
             End Using
 
@@ -279,7 +282,8 @@ Public Class ucPeminjaman
                    "Status        : " & r.Status
         If r.Catatan <> "" Then info &= vbCrLf & "Keperluan     : " & r.Catatan
 
-        If r.Status = "Dikembalikan" Then
+        If r.Status = "Dikembalikan" OrElse r.RequestId <> "" Then
+            If r.RequestId <> "" AndAlso r.Status <> "Dikembalikan" Then info &= vbCrLf & vbCrLf & "Pengembalian diajukan user dan diverifikasi di menu Verifikasi Pengajuan."
             MessageBox.Show(info, "Detail peminjaman", MessageBoxButtons.OK, MessageBoxIcon.Information)
         Else
             Dim ans = MessageBox.Show(info & vbCrLf & vbCrLf & "Tandai aset ini sudah dikembalikan?", "Detail peminjaman", MessageBoxButtons.YesNo, MessageBoxIcon.Question)
@@ -300,6 +304,8 @@ Public Class ucPeminjaman
 
     ' ---------- aksi ----------
     Private Async Sub OnPinjamClick(sender As Object, e As EventArgs)
+        MessageBox.Show("Peminjaman dibuat oleh user divisi dan dimulai setelah admin mencatat penyerahan.", "Gunakan Verifikasi Pengajuan")
+        Return
         Dim owner = FindForm()
         If owner Is Nothing Then Return
 

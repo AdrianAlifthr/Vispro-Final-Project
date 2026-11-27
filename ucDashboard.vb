@@ -19,6 +19,7 @@ Public Class ucDashboard
     Private ReadOnly _donutCatLabels(3) As Label
     Private ReadOnly _donutPctLabels(3) As Label
     Private ReadOnly _refreshTimer As Timer
+    Private ReadOnly _pendingButton As Button
     Private _isLoading As Boolean = False
 
     Public Sub New(userName As String)
@@ -30,6 +31,9 @@ Public Class ucDashboard
         banner.Controls.Add(MakeLabel(Greeting() & ", " & Capitalize(userName) & "!", 24, Theme.Charcoal, 24, 18, FontStyle.Bold))
         banner.Controls.Add(MakeLabel("Berikut ringkasan inventaris Anda secara real-time dari Supabase.", 14, Theme.Charcoal, 24, 56))
         banner.Controls.Add(MakeLabel(Date.Now.ToString("dddd, d MMMM yyyy", _id), 12, Theme.Charcoal, 830, 38, FontStyle.Bold))
+        _pendingButton = New Button() With {.Text = "Pengajuan: memuat...", .Location = New Point(830, 65), .Size = New Size(220, 26), .FlatStyle = FlatStyle.Flat}
+        AddHandler _pendingButton.Click, Sub(s, e) TryCast(FindForm(), FormMain)?.NavigateTo(9)
+        banner.Controls.Add(_pendingButton)
         Controls.Add(banner)
 
         ' ===== 4 KARTU RINGKASAN (y=136, tinggi 104, lebar 256) =====
@@ -104,6 +108,12 @@ Public Class ucDashboard
         If _isLoading Then Return
         _isLoading = True
         Try
+            Try
+                Dim requests = Await AssetRequests.ListAsync()
+                _pendingButton.Text = "Perlu tindakan: " & requests.Where(Function(r) r.Status = "pending" OrElse r.Status = "approved" OrElse r.Status = "return_pending").Count()
+            Catch
+                _pendingButton.Text = "Verifikasi pengajuan"
+            End Try
             ' 1. Ringkasan 4 kartu
             Dim sumJson = Await SupabaseClient.GetJsonAsync("/rest/v1/v_dashboard_summary")
             Dim totalAset As Integer = 0

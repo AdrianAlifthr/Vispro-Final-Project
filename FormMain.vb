@@ -1,73 +1,85 @@
-Imports System.Drawing.Drawing2D
+﻿Imports System.Drawing.Drawing2D
 
-Public Class FormMain
-    Inherits Form
-
+Public Partial Class FormMain
     Private ReadOnly _userName As String
     Private ReadOnly _menuItems As New List(Of SidebarItem)
-    Private ReadOnly _content As Panel
-    Private ReadOnly _lblTitle As Label
+    Private ReadOnly _verificationMenu As SidebarItem
+    Private ReadOnly _logoutMenu As SidebarItem
 
+    Public Property LogoutRequested As Boolean = False
     Private Shared ReadOnly MenuNames As String() = {
         "Dashboard", "Data Aset / Barang", "Barang Masuk", "Barang Keluar",
         "Peminjaman Aset", "Pemeliharaan", "Master Data", "Laporan", "Manajemen User"}
 
+    Public Sub New()
+        Me.New("Pengguna")
+    End Sub
+
     Public Sub New(userName As String)
         _userName = If(String.IsNullOrWhiteSpace(userName), "Pengguna", userName)
-
-        Text = "AsetKu - Inventaris & Manajemen Aset"
-        ClientSize = New Size(1366, 768)
-        StartPosition = FormStartPosition.CenterScreen
-        FormBorderStyle = FormBorderStyle.FixedSingle
-        MaximizeBox = False
-        BackColor = Theme.OffWhite
+        InitializeComponent()
         DoubleBuffered = True
-
-        ' ===== SIDEBAR (240px, Dark Charcoal) =====
-        Dim sidebar As New Panel() With {.Location = New Point(0, 0), .Size = New Size(240, 768), .BackColor = Theme.Charcoal}
-        sidebar.Controls.Add(MakeLabel("AsetKu", 28, Theme.OffWhite, 24, 26, FontStyle.Bold))
-        sidebar.Controls.Add(New Panel() With {.BackColor = Theme.Orange, .Location = New Point(132, 48), .Size = New Size(8, 8)})
-        sidebar.Controls.Add(MakeLabel("INVENTORY && ASSET", 11, Theme.Beige, 24, 70))
-
-        For i = 0 To MenuNames.Length - 1
-            Dim item As New SidebarItem(MenuNames(i)) With {.Location = New Point(12, 116 + i * 48), .Tag = i}
+        lblUserName.Text = Capitalize(_userName)
+        lblRole.Text = If(String.IsNullOrEmpty(SupabaseClient.CurrentUserRole), "Pengguna", Capitalize(SupabaseClient.CurrentUserRole))
+        If SupabaseClient.IsDemoSession Then
+            lblRole.Text &= " • DEMO"
+        End If
+        lblHelp.Visible = False
+        _menuItems.AddRange({menu0, menu1, menu2, menu3, menu4, menu5, menu6, menu7, menu8})
+        If IsAdmin Then
+            _verificationMenu = New SidebarItem() With {.Text = "Verifikasi Pengajuan", .Tag = "9", .Location = New Point(12, 548), .Size = New Size(216, 40)}
+            sidebar.Controls.Add(_verificationMenu)
+            _menuItems.Add(_verificationMenu)
+            menu3.Visible = False
+            menu4.Visible = False
+            menu5.Location = New Point(12, 260)
+            menu6.Location = New Point(12, 308)
+            menu7.Location = New Point(12, 356)
+            menu8.Location = New Point(12, 404)
+            _verificationMenu.Location = New Point(12, 452)
+            If SupabaseClient.IsDemoSession Then
+                For Each item In New SidebarItem() {menu1, menu2, menu3, menu4, menu5, menu6}
+                    item.Visible = False
+                Next
+                menu0.Text = "Dashboard Demo"
+                menu7.Location = New Point(12, 164)
+                menu8.Location = New Point(12, 212)
+                _verificationMenu.Location = New Point(12, 260)
+            End If
+        Else
+            For Each item In New SidebarItem() {menu2, menu5, menu6, menu7, menu8}
+                item.Visible = False
+            Next
+            menu0.Text = "Dashboard User"
+            menu1.Text = "Aset Tersedia"
+            menu3.Text = "Ajukan Barang Keluar"
+            menu4.Text = "Ajukan Peminjaman"
+            menu3.Location = New Point(12, 212)
+            menu4.Location = New Point(12, 260)
+        End If
+        For Each item In _menuItems
             AddHandler item.Click, AddressOf OnMenuClick
-            _menuItems.Add(item)
-            sidebar.Controls.Add(item)
         Next
-
-        sidebar.Controls.Add(New Panel() With {.BackColor = Theme.Grey, .Location = New Point(24, 620), .Size = New Size(192, 1)})
-        sidebar.Controls.Add(MakeLabel("Bantuan && panduan", 12, Theme.Beige, 24, 644))
-        sidebar.Controls.Add(MakeLabel("AsetKu Desktop  •  v1.0", 12, Theme.Beige, 24, 710))
-        Controls.Add(sidebar)
-
-        ' ===== TOP BAR (64px) =====
-        Dim topbar As New Panel() With {.Location = New Point(240, 0), .Size = New Size(1126, 64), .BackColor = Theme.OffWhite}
+        _logoutMenu = New SidebarItem() With {.Text = "Logout", .Location = New Point(12, 636), .Size = New Size(216, 40)}
+        AddHandler _logoutMenu.Click, Sub(s, e)
+                                          LogoutRequested = True
+                                          Close()
+                                      End Sub
+        sidebar.Controls.Add(_logoutMenu)
         AddHandler topbar.Paint, AddressOf TopbarPaint
-        _lblTitle = MakeLabel("Inventaris", 18, Theme.Charcoal, 24, 20, FontStyle.Bold)
-        topbar.Controls.Add(_lblTitle)
+        AddHandler avatar.Paint, AddressOf AvatarPaint
+    End Sub
 
-        Dim search As New AppTextBox() With {.Location = New Point(478, 14), .Width = 288, .PlaceholderText = "Cari aset, transaksi...", .BackColor = Theme.OffWhite}
-        topbar.Controls.Add(search)
+    Protected Overrides Sub OnLoad(e As EventArgs)
+        MyBase.OnLoad(e)
+        If Not DesignMode AndAlso Not System.ComponentModel.LicenseManager.UsageMode = System.ComponentModel.LicenseUsageMode.Designtime Then
+            NavigateTo(0)
+        End If
+    End Sub
 
-        topbar.Controls.Add(New Label() With {.Text = ChrW(&HD83D) & ChrW(&HDD14), .Font = New Font("Segoe UI Emoji", 14, GraphicsUnit.Pixel), .ForeColor = Theme.Grey, .AutoSize = True, .Location = New Point(792, 20), .BackColor = Color.Transparent})
-
-        Dim avatar As New Panel() With {.Location = New Point(848, 16), .Size = New Size(32, 32), .BackColor = Theme.OffWhite}
-        AddHandler avatar.Paint, Sub(s, e)
-                                     FillRounded(e.Graphics, New Rectangle(0, 0, 31, 31), 6, Theme.Beige)
-                                     DrawText(e.Graphics, Initials(_userName), AppFont(12, FontStyle.Bold), Theme.Charcoal, New Rectangle(0, 0, 32, 32), StringAlignment.Center)
-                                 End Sub
-        topbar.Controls.Add(avatar)
-        topbar.Controls.Add(MakeLabel(Capitalize(_userName), 12, Theme.Charcoal, 892, 14, FontStyle.Bold))
-        Dim roleLabel = If(String.IsNullOrEmpty(SupabaseClient.CurrentUserRole), "Pengguna", Capitalize(SupabaseClient.CurrentUserRole))
-        topbar.Controls.Add(MakeLabel(roleLabel, 12, Theme.Grey, 892, 34))
-        Controls.Add(topbar)
-
-        ' ===== AREA KONTEN =====
-        _content = New Panel() With {.Location = New Point(240, 64), .Size = New Size(1126, 704), .BackColor = Theme.OffWhite}
-        Controls.Add(_content)
-
-        NavigateTo(0)
+    Private Sub AvatarPaint(sender As Object, e As PaintEventArgs)
+        FillRounded(e.Graphics, New Rectangle(0, 0, 31, 31), 6, Theme.Beige)
+        DrawText(e.Graphics, Initials(_userName), AppFont(12, FontStyle.Bold), Theme.Charcoal, New Rectangle(0, 0, 32, 32), StringAlignment.Center)
     End Sub
 
     Private Sub TopbarPaint(sender As Object, e As PaintEventArgs)
@@ -80,18 +92,42 @@ Public Class FormMain
         NavigateTo(CInt(DirectCast(sender, Control).Tag))
     End Sub
 
+    Private ReadOnly Property IsAdmin As Boolean
+        Get
+            Return String.Equals(SupabaseClient.CurrentUserRole, "admin", StringComparison.OrdinalIgnoreCase)
+        End Get
+    End Property
+
     ''' <summary>Ganti halaman lewat menu sidebar. Tambahkan UserControl baru di sini.</summary>
     Public Sub NavigateTo(index As Integer)
+        If SupabaseClient.IsDemoSession AndAlso IsAdmin Then
+            Select Case index
+                Case 0, 9 : ShowPage(New ucRequestPage("admin"), index, If(index = 0, "Dashboard Demo", "Verifikasi Pengajuan"))
+                Case 7 : ShowPage(New ucHistoryReport(), 7, "Laporan")
+                Case 8 : ShowPage(New ucUser(), 8, "Manajemen User")
+            End Select
+            Return
+        End If
+        If Not IsAdmin Then
+            Select Case index
+                Case 0 : ShowPage(New ucRequestPage("dashboard"), 0, "Dashboard User")
+                Case 1 : ShowPage(New ucAvailableAssets(), 1, "Aset Tersedia")
+                Case 3 : ShowPage(New ucRequestPage("out"), 3, "Ajukan Barang Keluar")
+                Case 4 : ShowPage(New ucRequestPage("loan"), 4, "Ajukan Peminjaman")
+                Case Else : Return
+            End Select
+            Return
+        End If
         Select Case index
             Case 0 : ShowPage(New ucDashboard(_userName), 0)
             Case 1 : ShowPage(New ucAsetList(), 1)
             Case 2 : ShowPage(New ucTransaksi(TrxMode.Masuk, _userName), 2, "Barang Masuk")
-            Case 3 : ShowPage(New ucTransaksi(TrxMode.Keluar, _userName), 3, "Barang Keluar")
-            Case 4 : ShowPage(New ucPeminjaman(_userName), 4, "Peminjaman Aset")
+            Case 3, 4 : Return
             Case 5 : ShowPage(New ucPemeliharaan(), 5, "Pemeliharaan")
             Case 6 : ShowPage(New ucMasterData(), 6, "Master Data")
             Case 7 : ShowPage(New ucLaporan(), 7, "Laporan")
             Case 8 : ShowPage(New ucUser(), 8, "Manajemen User")
+            Case 9 : ShowPage(New ucRequestPage("admin"), 9, "Verifikasi Pengajuan")
             Case Else : ShowPage(New ucPlaceholder(MenuNames(index)), index, MenuNames(index))
         End Select
     End Sub
