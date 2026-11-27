@@ -19,6 +19,7 @@ Public Class ucAsetForm
     Private ReadOnly _txtJumlah As AppTextBox
     Private ReadOnly _cbKondisi As AppComboBox
     Private ReadOnly _txtKet As AppTextBox
+    Private ReadOnly _cbRequestKind As AppComboBox
     Private ReadOnly _photo As PhotoBox
     Private ReadOnly _btnSave As AppButton
 
@@ -86,6 +87,13 @@ Public Class ucAsetForm
         cardFoto.Controls.Add(MakeLabel("JPG, PNG  •  Maks. 2 MB", 12, Theme.Grey, 20, 301))
         Controls.Add(cardFoto)
 
+        Dim kindCard As New RoundedPanel() With {.Location = New Point(738, 451), .Size = New Size(340, 125), .Radius = 8}
+        kindCard.Controls.Add(MakeLabel("Jenis pengajuan *", 14, Theme.Charcoal, 20, 14, FontStyle.Bold))
+        _cbRequestKind = New AppComboBox() With {.Location = New Point(20, 48), .Width = 300, .PlaceholderText = "Pilih jenis barang"}
+        _cbRequestKind.SetItems("Barang Keluar", "Peminjaman")
+        kindCard.Controls.Add(_cbRequestKind)
+        Controls.Add(kindCard)
+
         ' ===== Catatan + tombol =====
         Controls.Add(MakeLabel("* Wajib diisi. Kosongkan Kode Aset agar dibuat otomatis oleh Supabase.", 12, Theme.Grey, 24, 592))
         Dim btnCancel As New AppButton() With {.Text = "Batal", .Kind = ButtonKind.Outline, .Location = New Point(814, 636), .Size = New Size(120, 36), .BackColor = Theme.OffWhite}
@@ -150,6 +158,8 @@ Public Class ucAsetForm
             _txtJumlah.Inner.Text = "1"
             _cbKondisi.SelectByText("Baik")
         Else
+            If _editing.RequestKind = "out" Then _cbRequestKind.SelectByText("Barang Keluar")
+            If _editing.RequestKind = "loan" Then _cbRequestKind.SelectByText("Peminjaman")
             _txtKode.Inner.Text = _editing.Kode
             _txtNama.Inner.Text = _editing.Nama
             _cbKategori.SelectByText(_editing.Kategori)
@@ -211,6 +221,7 @@ Public Class ucAsetForm
         If _cbKategori.SelectedItem Is Nothing Then missing.Add("Kategori")
         If _cbLokasi.SelectedItem Is Nothing Then missing.Add("Lokasi")
         If _cbKondisi.SelectedItem Is Nothing Then missing.Add("Kondisi")
+        If _cbRequestKind.SelectedItem Is Nothing Then missing.Add("Jenis pengajuan")
         Dim qty As Integer
         If Not Integer.TryParse(_txtJumlah.Inner.Text, qty) OrElse qty < 1 Then missing.Add("Jumlah (minimal 1)")
 
@@ -232,6 +243,7 @@ Public Class ucAsetForm
             {"acquired_date", _dtTanggal.Picker.Value.ToString("yyyy-MM-dd")},
             {"price", harga},
             {"quantity", qty},
+            {"request_kind", If(_cbRequestKind.SelectedItem = "Peminjaman", "loan", "out")},
             {"condition", ToDbCondition(_cbKondisi.SelectedItem)},
             {"description", If(ket = "", Nothing, ket)}
         }

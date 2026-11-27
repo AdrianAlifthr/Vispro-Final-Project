@@ -123,7 +123,7 @@ Partial Class FormLogin
         Me.lblEmail.Location = New System.Drawing.Point(792, 280)
         Me.lblEmail.Size = New System.Drawing.Size(450, 24)
         Me.lblEmail.AutoSize = True
-        Me.lblEmail.Text = "Username / Email"
+        Me.lblEmail.Text = "Email"
         Me.lblEmail.Font = New System.Drawing.Font("Segoe UI", 14.0!, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Pixel)
         Me.lblEmail.ForeColor = System.Drawing.Color.FromArgb(48, 50, 54)
         Me.lblEmail.BackColor = System.Drawing.Color.Transparent
@@ -131,7 +131,7 @@ Partial Class FormLogin
         Me.txtEmail.Name = "txtEmail"
         Me.txtEmail.Location = New System.Drawing.Point(792, 308)
         Me.txtEmail.Size = New System.Drawing.Size(454, 36)
-        Me.txtEmail.PlaceholderText = "admin@asetku.co.id"
+        Me.txtEmail.PlaceholderText = "Masukkan email akun"
         Me.txtEmail.TabIndex = 0
         ' lblPassword
         Me.lblPassword.Name = "lblPassword"
